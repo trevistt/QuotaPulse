@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+dist/
+QuotaPulse.app/
+docs/codex/
+*.log
+*.xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
