@@ -51,6 +51,20 @@ public enum ClaudeUsageProviderError: LocalizedError, Equatable {
     }
 }
 
+public struct ClaudeOAuthRateLimitError: LocalizedError, Equatable, Sendable {
+    public let retryAt: Date
+    private let message: String
+
+    public init(retryAt: Date, now: Date) {
+        self.retryAt = retryAt
+        self.message = "Rate limited. Try again in \(UsageSnapshot.countdown(to: retryAt, now: now))."
+    }
+
+    public var errorDescription: String? {
+        self.message
+    }
+}
+
 public enum ClaudeOAuthCredentialSource: String, Equatable, Sendable {
     case credentialsFile
     case appOAuthCache
@@ -64,6 +78,18 @@ public struct ClaudeOAuthCredentialRecord: Equatable, Sendable {
     public init(credentials: ClaudeOAuthCredentials, source: ClaudeOAuthCredentialSource) {
         self.credentials = credentials
         self.source = source
+    }
+}
+
+public protocol ClaudeOAuthCredentialResolving: Sendable {
+    func loadRecord(env: [String: String]) throws -> ClaudeOAuthCredentialRecord
+}
+
+public struct ClaudeOAuthCredentialsStoreResolver: ClaudeOAuthCredentialResolving {
+    public init() {}
+
+    public func loadRecord(env: [String: String]) throws -> ClaudeOAuthCredentialRecord {
+        try ClaudeOAuthCredentialsStore.loadRecord(env: env)
     }
 }
 
@@ -391,6 +417,7 @@ public struct DisabledClaudeUsageProvider: CodexUsageProviding, Sendable {
 public struct OAuthClaudeUsageProvider<Client: UsageHTTPClient>: CodexUsageProviding, Sendable {
     public static var betaHeaderValue: String { "oauth-2025-04-20" }
     public static var fallbackClaudeCodeVersion: String { "2.1.0" }
+    public static var fallbackRateLimitCooldown: TimeInterval { 5 * 60 }
 
     private let credentials: ClaudeOAuthCredentials
     private let env: [String: String]
@@ -420,13 +447,16 @@ public struct OAuthClaudeUsageProvider<Client: UsageHTTPClient>: CodexUsageProvi
         request.setValue(Self.betaHeaderValue, forHTTPHeaderField: "anthropic-beta")
 
         let (data, response) = try await self.httpClient.data(for: request)
+        let responseDate = self.now()
         switch response.statusCode {
         case 200...299:
-            return try Self.mapUsageResponse(data, source: .oauth, updatedAt: self.now())
+            return try Self.mapUsageResponse(data, source: .oauth, updatedAt: responseDate)
         case 401, 403:
             throw ClaudeUsageProviderError.processFailed("OAuth unauthorized; run Claude to refresh login.")
         case 429:
-            throw ClaudeUsageProviderError.processFailed("OAuth rate limited; wait a few minutes, then refresh.")
+            throw ClaudeOAuthRateLimitError(
+                retryAt: Self.retryAt(from: response, now: responseDate),
+                now: responseDate)
         default:
             throw ClaudeUsageProviderError.processFailed("HTTP \(response.statusCode)")
         }
@@ -491,6 +521,106 @@ public struct OAuthClaudeUsageProvider<Client: UsageHTTPClient>: CodexUsageProvi
         let token = raw.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? raw
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func retryAt(from response: HTTPURLResponse, now: Date) -> Date {
+        guard let header = response.value(forHTTPHeaderField: "Retry-After")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !header.isEmpty
+        else {
+            return now.addingTimeInterval(Self.fallbackRateLimitCooldown)
+        }
+
+        if let seconds = TimeInterval(header) {
+            return now.addingTimeInterval(max(0, seconds))
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss z"
+        return formatter.date(from: header) ?? now.addingTimeInterval(Self.fallbackRateLimitCooldown)
+    }
+}
+
+public actor ReloadingClaudeOAuthUsageProvider<Client: UsageHTTPClient, Resolver: ClaudeOAuthCredentialResolving>: CodexUsageProviding {
+    private var currentRecord: ClaudeOAuthCredentialRecord?
+    private var nextAllowedRefreshAt: Date?
+    private let env: [String: String]
+    private let httpClient: Client
+    private let credentialResolver: Resolver
+    private let now: @Sendable () -> Date
+
+    public init(
+        initialRecord: ClaudeOAuthCredentialRecord? = nil,
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        httpClient: Client,
+        credentialResolver: Resolver,
+        now: @escaping @Sendable () -> Date = Date.init)
+    {
+        self.currentRecord = initialRecord
+        self.env = env
+        self.httpClient = httpClient
+        self.credentialResolver = credentialResolver
+        self.now = now
+    }
+
+    public func fetchUsage() async throws -> UsageSnapshot {
+        let currentDate = self.now()
+        if let nextAllowedRefreshAt {
+            guard nextAllowedRefreshAt <= currentDate else {
+                throw ClaudeOAuthRateLimitError(retryAt: nextAllowedRefreshAt, now: currentDate)
+            }
+            self.nextAllowedRefreshAt = nil
+        }
+
+        let record = try self.currentRecord ?? self.loadRecord()
+        do {
+            let snapshot = try await self.fetchUsage(with: record)
+            self.nextAllowedRefreshAt = nil
+            return snapshot
+        } catch let rateLimitError as ClaudeOAuthRateLimitError {
+            self.nextAllowedRefreshAt = rateLimitError.retryAt
+            throw rateLimitError
+        } catch let authError {
+            guard Self.shouldRetryAfterReload(authError) else {
+                throw authError
+            }
+            let reloadedRecord: ClaudeOAuthCredentialRecord
+            do {
+                reloadedRecord = try self.loadRecord()
+            } catch {
+                throw authError
+            }
+            do {
+                let snapshot = try await self.fetchUsage(with: reloadedRecord)
+                self.nextAllowedRefreshAt = nil
+                return snapshot
+            } catch let rateLimitError as ClaudeOAuthRateLimitError {
+                self.nextAllowedRefreshAt = rateLimitError.retryAt
+                throw rateLimitError
+            }
+        }
+    }
+
+    private func loadRecord() throws -> ClaudeOAuthCredentialRecord {
+        let record = try self.credentialResolver.loadRecord(env: self.env)
+        self.currentRecord = record
+        return record
+    }
+
+    private func fetchUsage(with record: ClaudeOAuthCredentialRecord) async throws -> UsageSnapshot {
+        self.currentRecord = record
+        let provider = OAuthClaudeUsageProvider(
+            credentials: record.credentials,
+            env: self.env,
+            httpClient: self.httpClient,
+            now: self.now)
+        return try await provider.fetchUsage()
+    }
+
+    private static func shouldRetryAfterReload(_ error: Error) -> Bool {
+        UsageSnapshot.isAuthFailureMessage(error.localizedDescription)
     }
 }
 

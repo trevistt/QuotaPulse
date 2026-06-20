@@ -19,11 +19,13 @@ Run the harness:
 Scripts/test.sh
 ```
 
-Package a local unsigned app:
+Package a local app:
 
 ```bash
 Scripts/package_app.sh
 ```
+
+The default package is ad-hoc signed and uses app version `0.2.0`.
 
 Run a smoke check against the packaged app:
 
@@ -45,6 +47,10 @@ swift test
 
 This package currently uses the `QuotaPulseTestHarness` executable for validation. `swift test` may report that no tests are found.
 
+## Harness Coverage
+
+`Scripts/test.sh` runs `swift run QuotaPulseTestHarness`. The harness covers provider parsing, redaction, OAuth request behavior, Claude OAuth credential reload, Claude rate-limit cooldown, Smart Refresh policy, per-provider refresh modes, presence pause/wake behavior, countdown text, refresh debounce, stale cached values, and menu bar formatting.
+
 ## Script Checks
 
 The shell scripts are POSIX `sh` scripts. A basic syntax check can be run with:
@@ -52,6 +58,28 @@ The shell scripts are POSIX `sh` scripts. A basic syntax check can be run with:
 ```bash
 for script in Scripts/*.sh; do sh -n "$script"; done
 ```
+
+## Signing Checks
+
+Check the packaged app signing state:
+
+```bash
+Scripts/status_signing.sh
+```
+
+Package with a local signing identity:
+
+```bash
+QUOTA_PULSE_CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" Scripts/package_app.sh
+```
+
+Require stable signing and fail closed if no identity is configured:
+
+```bash
+QUOTA_PULSE_REQUIRE_CODESIGN=1 Scripts/package_app.sh
+```
+
+Do not commit local signing identity names. Official releases should use Developer ID signing and notarization.
 
 ## Public-Safety Checks
 
@@ -65,6 +93,7 @@ Before publishing, scan for:
 - screenshots
 - old private project names
 - unsupported claims about signing, notarization, distribution, or affiliation
+- local signing identity names
 
 Generated directories such as `.build/` and `dist/` are intentionally ignored by git.
 

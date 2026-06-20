@@ -72,12 +72,11 @@ final class NotchPillController {
         let root = HoverPanelView(
             codexStore: self.codexStore,
             claudeStore: self.claudeStore,
-            cadence: self.scheduler.cadence,
+            scheduler: self.scheduler,
             isPinned: self.isPinned,
             maxPanelHeight: maxPanelHeight,
             onRefresh: { [weak self] in self?.scheduler.refreshNow() },
             onTogglePin: { [weak self] in self?.togglePinned() },
-            onCadenceChange: { [weak self] cadence in self?.setCadence(cadence) },
             onQuit: { NSApp.terminate(nil) },
             onPreferredSizeChange: { [weak self] preferredSize in
                 guard let self, let screen = NSScreen.main else { return }
@@ -95,6 +94,7 @@ final class NotchPillController {
         self.detailPanel?.contentView = NSHostingView(rootView: root)
         self.detailPanel?.setFrame(frame, display: true)
         self.detailPanel?.orderFrontRegardless()
+        self.scheduler.setDashboardVisible(true)
     }
 
     private func detailFrame(size: CGSize, screen: NSScreen) -> CGRect {
@@ -111,6 +111,7 @@ final class NotchPillController {
         let item = DispatchWorkItem { [weak self] in
             guard let self, !self.isHoveringPill, !self.isHoveringDetail else { return }
             self.detailPanel?.orderOut(nil)
+            self.scheduler.setDashboardVisible(false)
         }
         self.closeWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: item)
@@ -125,10 +126,6 @@ final class NotchPillController {
         }
     }
 
-    private func setCadence(_ cadence: RefreshCadence) {
-        self.scheduler.setCadence(cadence)
-        self.showDetail()
-    }
 }
 
 private final class MeterPanel: NSPanel {

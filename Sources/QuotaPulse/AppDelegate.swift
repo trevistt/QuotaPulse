@@ -4,13 +4,12 @@ import QuotaPulseCore
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let automaticTerminationReason = "QuotaPulse menu bar status item is active."
-    private static let claudeOAuthMinimumInterval: TimeInterval = 5 * 60
     private var codexStore: UsageStore?
     private var claudeStore: UsageStore?
     private var scheduler: RefreshScheduler?
     private var statusItemController: StatusItemController?
     private var notchPillController: NotchPillController?
-    private var wakeObserver: NSObjectProtocol?
+    private var presenceMonitor: UserPresenceMonitor?
     private var screenObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -30,6 +29,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             codexStore: codexStore,
             claudeStore: claudeStore,
             scheduler: scheduler)
+        self.presenceMonitor = UserPresenceMonitor { [weak scheduler] state in
+            scheduler?.updatePresence(state)
+        }
+        self.presenceMonitor?.start()
         if Self.shouldShowNotchPill() {
             self.notchPillController = NotchPillController(
                 codexStore: codexStore,
@@ -37,15 +40,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 scheduler: scheduler)
             self.notchPillController?.showIfAvailable()
         }
-
-        self.wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: .main) { [weak self] _ in
-                Task { @MainActor in
-                    self?.scheduler?.refreshNow()
-                }
-            }
 
         if self.notchPillController != nil {
             self.screenObserver = NotificationCenter.default.addObserver(
@@ -63,10 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         self.scheduler?.stop()
+        self.presenceMonitor?.stop()
         ProcessInfo.processInfo.enableAutomaticTermination(self.automaticTerminationReason)
-        if let wakeObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
-        }
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }
@@ -117,7 +109,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let credentialsResult: Result<ClaudeOAuthCredentialRecord, Error> = Result {
             try ClaudeOAuthCredentialsStore.loadRecord(env: env)
         }
-        let credentials = try? credentialsResult.get().credentials
+        let credentialRecord = try? credentialsResult.get()
+        let credentials = credentialRecord?.credentials
         let credentialErrorMessage: String? = {
             guard credentials == nil else { return nil }
             if case let .failure(error) = credentialsResult {
@@ -139,13 +132,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for source in plan.orderedSources {
             switch source {
             case .oauth:
-                guard let credentials else { continue }
-                providers.append(RateLimitedUsageProvider(
-                    provider: OAuthClaudeUsageProvider(
-                        credentials: credentials,
+                guard let credentialRecord else { continue }
+                providers.append(
+                    ReloadingClaudeOAuthUsageProvider(
+                        initialRecord: credentialRecord,
                         env: env,
-                        httpClient: URLSessionUsageHTTPClient()),
-                    minimumInterval: Self.claudeOAuthMinimumInterval))
+                        httpClient: URLSessionUsageHTTPClient(),
+                        credentialResolver: ClaudeOAuthCredentialsStoreResolver()))
             case .cli:
                 providers.append(ClaudeCLIUsageProvider(env: env))
             case .disabled:

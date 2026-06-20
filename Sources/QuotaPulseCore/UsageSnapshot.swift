@@ -85,6 +85,8 @@ public struct UsageNamedWindow: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct UsageSnapshot: Codable, Equatable, Sendable {
+    public static let claudeLoginExpiredMessage = "Claude login expired. Open Claude Code to refresh login, then press Refresh."
+
     public let sessionPercentRemaining: Double?
     public let weeklyPercentRemaining: Double?
     public let sessionResetAt: Date?
@@ -94,6 +96,7 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
     public let updatedAt: Date
     public let isStale: Bool
     public let errorMessage: String?
+    public let rateLimitRetryAt: Date?
 
     public init(
         sessionPercentRemaining: Double?,
@@ -104,7 +107,8 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
         source: UsageSource,
         updatedAt: Date,
         isStale: Bool = false,
-        errorMessage: String? = nil)
+        errorMessage: String? = nil,
+        rateLimitRetryAt: Date? = nil)
     {
         self.sessionPercentRemaining = sessionPercentRemaining.map(UsageWindow.clampPercent)
         self.weeklyPercentRemaining = weeklyPercentRemaining.map(UsageWindow.clampPercent)
@@ -115,6 +119,7 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
         self.updatedAt = updatedAt
         self.isStale = isStale
         self.errorMessage = errorMessage
+        self.rateLimitRetryAt = rateLimitRetryAt
     }
 
     enum CodingKeys: String, CodingKey {
@@ -127,6 +132,7 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
         case updatedAt
         case isStale
         case errorMessage
+        case rateLimitRetryAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -140,7 +146,8 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
             source: try container.decode(UsageSource.self, forKey: .source),
             updatedAt: try container.decode(Date.self, forKey: .updatedAt),
             isStale: try container.decodeIfPresent(Bool.self, forKey: .isStale) ?? false,
-            errorMessage: try container.decodeIfPresent(String.self, forKey: .errorMessage))
+            errorMessage: try container.decodeIfPresent(String.self, forKey: .errorMessage),
+            rateLimitRetryAt: try container.decodeIfPresent(Date.self, forKey: .rateLimitRetryAt))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -154,6 +161,7 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
         try container.encode(self.updatedAt, forKey: .updatedAt)
         try container.encode(self.isStale, forKey: .isStale)
         try container.encodeIfPresent(self.errorMessage, forKey: .errorMessage)
+        try container.encodeIfPresent(self.rateLimitRetryAt, forKey: .rateLimitRetryAt)
     }
 
     public static func fromWindows(
@@ -184,10 +192,16 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
             source: .error,
             updatedAt: updatedAt,
             isStale: false,
-            errorMessage: Self.sanitized(message))
+            errorMessage: Self.sanitized(message),
+            rateLimitRetryAt: nil)
     }
 
-    public func markedStale(errorMessage: String, updatedAt: Date = Date()) -> UsageSnapshot {
+    public func markedStale(
+        errorMessage: String,
+        updatedAt: Date = Date(),
+        rateLimitRetryAt: Date? = nil)
+        -> UsageSnapshot
+    {
         UsageSnapshot(
             sessionPercentRemaining: self.sessionPercentRemaining,
             weeklyPercentRemaining: self.weeklyPercentRemaining,
@@ -197,7 +211,8 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
             source: self.source,
             updatedAt: updatedAt,
             isStale: true,
-            errorMessage: Self.sanitized(errorMessage))
+            errorMessage: Self.sanitized(errorMessage),
+            rateLimitRetryAt: rateLimitRetryAt)
     }
 
     public var primaryDisplayText: String {
@@ -213,6 +228,26 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
     public var sourceLabel: String {
         if self.source == .error { return UsageSource.error.rawValue }
         return self.isStale ? "\(self.source.rawValue), stale" : self.source.rawValue
+    }
+
+    public var hasAuthFailureError: Bool {
+        guard let errorMessage else { return false }
+        return Self.isAuthFailureMessage(errorMessage)
+    }
+
+    public var hasStaleAuthFailure: Bool {
+        self.isStale && self.hasAuthFailureError
+    }
+
+    public var hasRateLimitError: Bool {
+        guard let errorMessage else { return false }
+        return Self.isRateLimitMessage(errorMessage)
+    }
+
+    public func hasUsableCachedSessionPercent(now: Date = Date()) -> Bool {
+        guard self.isStale, self.sessionPercentRemaining != nil else { return false }
+        guard let sessionResetAt else { return true }
+        return sessionResetAt > now
     }
 
     public func resetCountdown(now: Date = Date()) -> String {
@@ -265,6 +300,20 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
         }
         return output
     }
+
+    public static func isAuthFailureMessage(_ message: String) -> Bool {
+        let lowercased = message.lowercased()
+        return lowercased.contains("unauthorized")
+            || lowercased.contains("forbidden")
+            || lowercased.contains("401")
+            || lowercased.contains("403")
+            || lowercased.contains("login expired")
+            || lowercased.contains("refresh login")
+    }
+
+    public static func isRateLimitMessage(_ message: String) -> Bool {
+        message.lowercased().contains("rate limited")
+    }
 }
 
 public enum UsageDisplayFormatter {
@@ -289,27 +338,27 @@ public enum UsageDisplayFormatter {
         self.menuBarCompactText(codex: codex, claude: claude)
     }
 
-    public static func menuBarLines(codex: UsageSnapshot, claude: UsageSnapshot) -> [ProviderLine] {
+    public static func menuBarLines(codex: UsageSnapshot, claude: UsageSnapshot, now: Date = Date()) -> [ProviderLine] {
         [
-            ProviderLine(provider: .codex, value: Self.menuBarValue(codex)),
-            ProviderLine(provider: .claude, value: Self.menuBarValue(claude)),
+            ProviderLine(provider: .codex, value: Self.menuBarValue(codex, now: now)),
+            ProviderLine(provider: .claude, value: Self.menuBarValue(claude, now: now)),
         ]
     }
 
-    public static func menuBarMultilineText(codex: UsageSnapshot, claude: UsageSnapshot) -> String {
-        self.menuBarLines(codex: codex, claude: claude)
+    public static func menuBarMultilineText(codex: UsageSnapshot, claude: UsageSnapshot, now: Date = Date()) -> String {
+        self.menuBarLines(codex: codex, claude: claude, now: now)
             .map(\.compactText)
             .joined(separator: "\n")
     }
 
-    public static func menuBarCompactText(codex: UsageSnapshot, claude: UsageSnapshot) -> String {
-        self.menuBarLines(codex: codex, claude: claude)
+    public static func menuBarCompactText(codex: UsageSnapshot, claude: UsageSnapshot, now: Date = Date()) -> String {
+        self.menuBarLines(codex: codex, claude: claude, now: now)
             .map(\.compactText)
             .joined(separator: "  ")
     }
 
-    public static func menuBarAccessibilityText(codex: UsageSnapshot, claude: UsageSnapshot) -> String {
-        self.menuBarLines(codex: codex, claude: claude)
+    public static func menuBarAccessibilityText(codex: UsageSnapshot, claude: UsageSnapshot, now: Date = Date()) -> String {
+        self.menuBarLines(codex: codex, claude: claude, now: now)
             .map(\.accessibilityText)
             .joined(separator: ", ")
     }
@@ -319,7 +368,18 @@ public enum UsageDisplayFormatter {
         return UsageWindow.clampPercent(percent) / 100
     }
 
-    private static func menuBarValue(_ snapshot: UsageSnapshot) -> String {
+    private static func menuBarValue(_ snapshot: UsageSnapshot, now: Date = Date()) -> String {
+        if snapshot.isStale {
+            if let value = snapshot.sessionPercentRemaining,
+               snapshot.hasUsableCachedSessionPercent(now: now)
+            {
+                return "\(Int(value.rounded()))!"
+            }
+            if snapshot.errorMessage != nil {
+                return "ERR"
+            }
+            return "--!"
+        }
         if let value = snapshot.sessionPercentRemaining {
             return "\(Int(value.rounded()))%"
         }

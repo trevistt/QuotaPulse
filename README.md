@@ -20,13 +20,13 @@ Scripts/test.sh
 Scripts/package_app.sh
 ```
 
-`Scripts/package_app.sh` creates an unsigned local app at:
+`Scripts/package_app.sh` creates a local app at:
 
 ```text
 dist/QuotaPulse.app
 ```
 
-The app is not signed or notarized. macOS may require you to allow the local build manually before opening it.
+The default package is ad-hoc signed for local use. It is not Developer ID signed or notarized. macOS may require you to allow the local build manually before opening it.
 
 ## Run Locally
 
@@ -43,6 +43,20 @@ You can also run the app binary directly for a non-interactive smoke check:
 ```bash
 dist/QuotaPulse.app/Contents/MacOS/QuotaPulse --smoke-check
 ```
+
+## Smart Refresh
+
+QuotaPulse uses Smart Refresh to keep Codex and Claude usage fresh without polling both providers at the same pace.
+
+- Codex and Claude have separate refresh modes.
+- Each provider supports Auto and manual modes.
+- Auto mode can slow down when values are unchanged.
+- Auto mode pauses or delays automatic refreshes when the Mac is locked, asleep, in screensaver, or idle.
+- Jitter is added to avoid fixed polling cadence.
+- Claude OAuth rate limits create a cooldown so repeated refreshes do not keep calling Claude before retry time.
+- The dashboard shows visible refresh feedback, next refresh countdowns, pause state, and Claude cooldown state.
+
+The dashboard countdown text, such as `Next 24s`, updates while the dashboard is visible or pinned.
 
 ## Open at Login
 
@@ -95,10 +109,38 @@ Optional packaging variables:
 - `QUOTA_PULSE_BUNDLE_ID`
 - `QUOTA_PULSE_APP_VERSION`
 - `QUOTA_PULSE_APP_BUILD`
+- `QUOTA_PULSE_CODESIGN_IDENTITY`
+- `QUOTA_PULSE_REQUIRE_CODESIGN`
+
+The default version in the package script is `0.2.0`.
+
+### Local Signing
+
+Packaging ad-hoc signs the app by default. This verifies the app bundle shape for local use, but it is not an official release signature and it is not notarization.
+
+If you have your own local signing identity, you can use it:
+
+```bash
+QUOTA_PULSE_CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" Scripts/package_app.sh
+```
+
+To fail closed when no stable signing identity is configured:
+
+```bash
+QUOTA_PULSE_REQUIRE_CODESIGN=1 Scripts/package_app.sh
+```
+
+Check the packaged app signing state:
+
+```bash
+Scripts/status_signing.sh
+```
+
+For official public distribution, use an Apple Developer ID certificate and notarization. Do not commit local signing identity names to this repository.
 
 ## Privacy and Security Model
 
-QuotaPulse runs locally on your Mac. It does not include a server component, analytics service, auto-updater, WebView scraping, browser cookie access, background hooks, sudo installation, signing, notarization, publishing automation, or GitHub automation.
+QuotaPulse runs locally on your Mac. It does not include a server component, analytics service, auto-updater, WebView scraping, browser cookie access, background hooks, sudo installation, official release signing, notarization, publishing automation, or GitHub automation.
 
 For live usage data, QuotaPulse reads locally available Codex and Claude credentials from documented local locations, then makes direct API requests from your machine. It does not write credentials, refresh OAuth credentials, or store Authorization header values.
 
@@ -122,6 +164,8 @@ See [docs/PRIVACY.md](docs/PRIVACY.md) and [docs/SECURITY.md](docs/SECURITY.md).
 - `QUOTA_PULSE_CLAUDE_CREDENTIALS_PATH=/path/to/credentials.json`: override Claude credentials file path.
 - `QUOTA_PULSE_CLAUDE_OAUTH_CACHE_PATH=/path/to/credentials.json`: override app-owned Claude OAuth cache path.
 - `QUOTA_PULSE_CLAUDE_CLI_PATH=/path/to/claude`: override Claude CLI path.
+- `QUOTA_PULSE_CODESIGN_IDENTITY`: optional local signing identity for packaging.
+- `QUOTA_PULSE_REQUIRE_CODESIGN=1`: fail packaging unless `QUOTA_PULSE_CODESIGN_IDENTITY` is set.
 
 Legacy `CODEX_NOTCH_METER_*` environment variable aliases are accepted only as transitional compatibility for older local setups. New configuration should use `QUOTA_PULSE_*`.
 
@@ -149,7 +193,7 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [docs/ARCHITECTURE.md](docs/A
 
 ## Limitations
 
-- Local build only; no signed or notarized release is included.
+- Local build only; no Developer ID signed or notarized release is included.
 - No official API guarantee is provided by this repository.
 - No auto-update system is included.
 - No formal XCTest target is included; the repository includes a Swift test harness executable.

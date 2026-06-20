@@ -31,6 +31,7 @@ public struct UsageSnapshotCache: Sendable {
         }
     }
 }
+
 @MainActor
 public final class UsageStore: ObservableObject {
     @Published public private(set) var snapshot: UsageSnapshot
@@ -60,17 +61,26 @@ public final class UsageStore: ObservableObject {
             return true
         } catch {
             let message = error.localizedDescription
+            let rateLimitRetryAt = (error as? ClaudeOAuthRateLimitError)?.retryAt
             self.consecutiveFailures += 1
             if self.snapshot.sessionPercentRemaining != nil || self.snapshot.weeklyPercentRemaining != nil {
-                self.snapshot = self.snapshot.markedStale(errorMessage: message)
+                self.snapshot = self.snapshot.markedStale(
+                    errorMessage: message,
+                    rateLimitRetryAt: rateLimitRetryAt)
             } else if let cached = self.cache.load(),
                       cached.sessionPercentRemaining != nil || cached.weeklyPercentRemaining != nil
             {
-                self.snapshot = cached.markedStale(errorMessage: message)
+                self.snapshot = cached.markedStale(
+                    errorMessage: message,
+                    rateLimitRetryAt: rateLimitRetryAt)
             } else {
                 self.snapshot = UsageSnapshot.error(message)
             }
             return true
         }
+    }
+
+    public func replaceSnapshotForTesting(_ snapshot: UsageSnapshot) {
+        self.snapshot = snapshot
     }
 }

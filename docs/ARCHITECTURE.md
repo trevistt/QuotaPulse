@@ -16,6 +16,16 @@ QuotaPulse is a Swift Package with three targets.
 4. UI controllers render compact menu bar status and a dashboard popover.
 5. Errors are converted into sanitized messages before display.
 
+## Smart Refresh
+
+`RefreshScheduler` owns per-provider refresh state for Codex and Claude. Each provider can use its own mode, next refresh time, cooldown, pause reason, and refresh status.
+
+Auto mode can adapt to dashboard visibility, unchanged successful reads, user presence, wake events, and Claude OAuth cooldowns. Jitter is applied to scheduled refreshes to avoid fixed polling cadence.
+
+`UserPresenceMonitor` observes coarse macOS local presence signals and reports them to the scheduler. It does not send presence data anywhere.
+
+`HoverPanelView` renders provider-specific refresh controls and countdown text. Countdown text uses a visible one-second tick while the dashboard is visible or pinned.
+
 ## Provider Model
 
 Codex usage can be read through local OAuth credentials or local CLI/RPC fallback behavior already implemented in the core provider layer.

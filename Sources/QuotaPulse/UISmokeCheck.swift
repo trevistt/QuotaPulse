@@ -11,10 +11,6 @@ enum UISmokeCheck {
             provider: FixtureClaudeUsageProvider(mode: .success),
             cache: UsageSnapshotCache(url: Self.tempCacheURL("claude")))
         let scheduler = RefreshScheduler(stores: [codexStore, claudeStore])
-        let controller = StatusItemController(
-            codexStore: codexStore,
-            claudeStore: claudeStore,
-            scheduler: scheduler)
 
         let semaphore = DispatchSemaphore(value: 0)
         Task { @MainActor in
@@ -25,6 +21,11 @@ enum UISmokeCheck {
         while semaphore.wait(timeout: .now()) == .timedOut {
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
         }
+
+        let controller = StatusItemController(
+            codexStore: codexStore,
+            claudeStore: claudeStore,
+            scheduler: scheduler)
 
         let display = controller.titleForTesting()
         let mode = controller.displayModeForTesting()
@@ -49,6 +50,15 @@ enum UISmokeCheck {
             return false
         }
         guard self.menuBarSnapshotSyncSmokePassed() else {
+            return false
+        }
+        guard self.menuBarStaleAuthSmokePassed() else {
+            return false
+        }
+        guard self.refreshFeedbackSmokePassed() else {
+            return false
+        }
+        guard self.smartRefreshControlsSmokePassed() else {
             return false
         }
         guard controller.preparePopoverForTesting() else {
@@ -83,6 +93,169 @@ enum UISmokeCheck {
         return true
     }
 
+    private static func refreshFeedbackSmokePassed() -> Bool {
+        guard HoverPanelView.refreshControlTextForTesting(isRefreshing: false) == "Refresh" else {
+            print("UI smoke failed: refresh button idle text is not Refresh")
+            return false
+        }
+        guard HoverPanelView.refreshControlTextForTesting(isRefreshing: true) == "Refreshing..." else {
+            print("UI smoke failed: refresh button active text is not Refreshing...")
+            return false
+        }
+
+        let rateLimitedClaude = self.snapshot(sessionRemaining: 100, weeklyRemaining: 92)
+            .markedStale(errorMessage: "Rate limited. Try again in 2m.")
+        let message = HoverPanelView.stateMessageTextForTesting(provider: .claude, snapshot: rateLimitedClaude)
+        guard message.contains("Rate limited. Try again in 2m.") else {
+            print("UI smoke failed: rate-limit dashboard message does not include cooldown, got `\(message)`")
+            return false
+        }
+        guard message.contains("! means stale cached value") else {
+            print("UI smoke failed: rate-limit dashboard message does not explain stale marker, got `\(message)`")
+            return false
+        }
+
+        let menuBar = UsageDisplayFormatter.menuBarCompactText(
+            codex: self.snapshot(sessionRemaining: 63, weeklyRemaining: 39),
+            claude: rateLimitedClaude)
+        guard menuBar.contains("Cl 100!") else {
+            print("UI smoke failed: rate-limited Claude menu bar should show stale marker, got `\(menuBar)`")
+            return false
+        }
+        return true
+    }
+
+    private static func smartRefreshControlsSmokePassed() -> Bool {
+        guard RefreshMode.allowedModes(for: .codex) == [.auto, .seconds30, .oneMinute, .fiveMinutes, .manual] else {
+            print("UI smoke failed: Codex Smart Refresh modes are not scoped correctly")
+            return false
+        }
+        guard RefreshMode.allowedModes(for: .claude) == [.auto, .seconds30, .oneMinute, .fiveMinutes, .tenMinutes, .manual] else {
+            print("UI smoke failed: Claude Smart Refresh modes are not scoped correctly")
+            return false
+        }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let nextState = ProviderRefreshState(
+            provider: .codex,
+            mode: .auto,
+            nextRefreshAt: now.addingTimeInterval(24),
+            lastStatusText: "Next refresh")
+        let cooldownState = ProviderRefreshState(
+            provider: .claude,
+            mode: .auto,
+            cooldownUntil: now.addingTimeInterval(240),
+            lastStatusText: "Claude cooldown")
+        let pausedState = ProviderRefreshState(
+            provider: .claude,
+            mode: .auto,
+            pausedReason: .locked,
+            lastStatusText: "Paused")
+
+        guard HoverPanelView.providerStatusTextForTesting(provider: .codex, state: nextState, now: now) == "Next 24s" else {
+            print("UI smoke failed: Codex next refresh status text is not compact")
+            return false
+        }
+        guard HoverPanelView.providerStatusTextForTesting(provider: .claude, state: cooldownState, now: now) == "Cooldown 4m" else {
+            print("UI smoke failed: Claude cooldown status text is not compact")
+            return false
+        }
+        guard HoverPanelView.providerStatusTextForTesting(provider: .claude, state: pausedState, now: now) == "Paused screen locked" else {
+            print("UI smoke failed: paused status text is not clear")
+            return false
+        }
+        return true
+    }
+
+    private static func menuBarStaleAuthSmokePassed() -> Bool {
+        let healthyCodexStore = UsageStore(
+            provider: SequencedUsageProvider(snapshots: [
+                self.snapshot(sessionRemaining: 63, weeklyRemaining: 39),
+            ]),
+            cache: UsageSnapshotCache(url: Self.tempCacheURL("codex-healthy-claude")))
+        let healthyClaudeStore = UsageStore(
+            provider: SequencedUsageProvider(snapshots: [
+                self.snapshot(sessionRemaining: 92, weeklyRemaining: 82),
+            ]),
+            cache: UsageSnapshotCache(url: Self.tempCacheURL("claude-healthy")))
+        healthyCodexStore.replaceSnapshotForTesting(self.snapshot(sessionRemaining: 63, weeklyRemaining: 39))
+        healthyClaudeStore.replaceSnapshotForTesting(self.snapshot(sessionRemaining: 92, weeklyRemaining: 82))
+        let healthyController = StatusItemController(
+            codexStore: healthyCodexStore,
+            claudeStore: healthyClaudeStore,
+            scheduler: RefreshScheduler(stores: [healthyCodexStore, healthyClaudeStore]))
+        guard self.waitForMenuBarValues(healthyController, codex: "63%", claude: "92%") else {
+            print("UI smoke failed: healthy Claude menu bar value did not render as 92%")
+            return false
+        }
+
+        let initialCodex = self.snapshot(sessionRemaining: 63, weeklyRemaining: 39)
+        let initialClaude = self.snapshot(sessionRemaining: 89, weeklyRemaining: 82)
+        let codexStore = UsageStore(
+            provider: SequencedUsageProvider(snapshots: [
+                initialCodex,
+            ]),
+            cache: UsageSnapshotCache(url: Self.tempCacheURL("codex-stale-auth")))
+        let claudeStore = UsageStore(
+            provider: SequencedUsageProvider(steps: [
+                .snapshot(initialClaude),
+                .failure("OAuth unauthorized; run Claude to refresh login."),
+            ]),
+            cache: UsageSnapshotCache(url: Self.tempCacheURL("claude-stale-auth")))
+        codexStore.replaceSnapshotForTesting(initialCodex)
+        claudeStore.replaceSnapshotForTesting(initialClaude)
+        let scheduler = RefreshScheduler(stores: [codexStore, claudeStore])
+        let controller = StatusItemController(
+            codexStore: codexStore,
+            claudeStore: claudeStore,
+            scheduler: scheduler)
+
+        guard self.waitForMenuBarValues(controller, codex: "63%", claude: "89%") else {
+            print("UI smoke failed: stale auth initial menu bar values were not rendered")
+            return false
+        }
+
+        claudeStore.replaceSnapshotForTesting(initialClaude.markedStale(errorMessage: "OAuth unauthorized; run Claude to refresh login."))
+        guard claudeStore.snapshot.isStale, claudeStore.snapshot.hasAuthFailureError else {
+            print("UI smoke failed: Claude unauthorized refresh did not produce stale auth snapshot")
+            return false
+        }
+        guard self.waitForMenuBarValues(controller, codex: "63%", claude: "89!") else {
+            let values = controller.menuBarValuesForTesting()
+            print("UI smoke failed: stale auth menu bar should mark old Claude percentage stale, got \(values)")
+            return false
+        }
+        let message = HoverPanelView.stateMessageTextForTesting(provider: .claude, snapshot: claudeStore.snapshot)
+        guard message == UsageSnapshot.claudeLoginExpiredMessage else {
+            print("UI smoke failed: dashboard stale auth message was not clear, got `\(message)`")
+            return false
+        }
+
+        let expiredClaudeStore = UsageStore(
+            provider: SequencedUsageProvider(steps: [
+                .snapshot(self.snapshot(
+                    sessionRemaining: 89,
+                    weeklyRemaining: 82,
+                    sessionResetAt: Date().addingTimeInterval(-1))),
+                .failure("OAuth unauthorized; run Claude to refresh login."),
+            ]),
+            cache: UsageSnapshotCache(url: Self.tempCacheURL("claude-expired-stale-auth")))
+        expiredClaudeStore.replaceSnapshotForTesting(self.snapshot(
+            sessionRemaining: 89,
+            weeklyRemaining: 82,
+            sessionResetAt: Date().addingTimeInterval(-1)))
+        let expiredController = StatusItemController(
+            codexStore: codexStore,
+            claudeStore: expiredClaudeStore,
+            scheduler: RefreshScheduler(stores: [codexStore, expiredClaudeStore]))
+        expiredClaudeStore.replaceSnapshotForTesting(expiredClaudeStore.snapshot.markedStale(errorMessage: "OAuth unauthorized; run Claude to refresh login."))
+        guard self.waitForMenuBarValues(expiredController, codex: "63%", claude: "ERR") else {
+            let values = expiredController.menuBarValuesForTesting()
+            print("UI smoke failed: expired stale Claude value should render ERR, got \(values)")
+            return false
+        }
+        return true
+    }
+
     private static func menuBarSnapshotSyncSmokePassed() -> Bool {
         let codexStore = UsageStore(
             provider: SequencedUsageProvider(snapshots: [
@@ -96,36 +269,28 @@ enum UISmokeCheck {
                 self.snapshot(sessionRemaining: 92, weeklyRemaining: 83),
             ]),
             cache: UsageSnapshotCache(url: Self.tempCacheURL("claude-sync")))
+        codexStore.replaceSnapshotForTesting(self.snapshot(sessionRemaining: 63, weeklyRemaining: 39))
+        claudeStore.replaceSnapshotForTesting(self.snapshot(sessionRemaining: 100, weeklyRemaining: 83))
         let scheduler = RefreshScheduler(stores: [codexStore, claudeStore])
         let controller = StatusItemController(
             codexStore: codexStore,
             claudeStore: claudeStore,
             scheduler: scheduler)
 
-        guard self.refreshStores([codexStore, claudeStore]) else {
-            print("UI smoke failed: initial sync refresh did not complete")
-            return false
-        }
         guard self.waitForMenuBarValues(controller, codex: "63%", claude: "100%") else {
             let values = controller.menuBarValuesForTesting()
             print("UI smoke failed: initial rendered menu bar values were stale, got \(values), store Claude \(claudeStore.snapshot.primaryDisplayText)")
             return false
         }
 
-        guard self.refreshStores([claudeStore]) else {
-            print("UI smoke failed: Claude sync refresh did not complete")
-            return false
-        }
+        claudeStore.replaceSnapshotForTesting(self.snapshot(sessionRemaining: 92, weeklyRemaining: 83))
         guard self.waitForMenuBarValues(controller, codex: "63%", claude: "92%") else {
             let values = controller.menuBarValuesForTesting()
             print("UI smoke failed: rendered Claude menu bar value did not update to latest snapshot, got \(values), store Claude \(claudeStore.snapshot.primaryDisplayText)")
             return false
         }
 
-        guard self.refreshStores([codexStore]) else {
-            print("UI smoke failed: Codex sync refresh did not complete")
-            return false
-        }
+        codexStore.replaceSnapshotForTesting(self.snapshot(sessionRemaining: 44, weeklyRemaining: 39))
         guard self.waitForMenuBarValues(controller, codex: "44%", claude: "92%") else {
             let values = controller.menuBarValuesForTesting()
             print("UI smoke failed: rendered Codex menu bar value did not update independently, got \(values), store Codex \(codexStore.snapshot.primaryDisplayText)")
@@ -151,7 +316,8 @@ enum UISmokeCheck {
             ("hundred", ["100%", "100%"]),
             ("error", ["ERR", "95%"]),
             ("unavailable", ["--", "--"]),
-            ("stale", ["35%", "ERR"]),
+            ("stale", ["35%", "89!"]),
+            ("expired-stale", ["35%", "ERR"]),
         ]
         for testCase in cases {
             let width = StatusItemController.menuBarWidthForTesting(values: testCase.1)
@@ -218,6 +384,30 @@ enum UISmokeCheck {
             print("UI smoke failed: panel frame did not shrink for small visible screen: \(smallFrame)")
             return false
         }
+
+        let primary = PanelScreenFrame(
+            frame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1440, height: 875))
+        let secondary = PanelScreenFrame(
+            frame: CGRect(x: 1440, y: 0, width: 1280, height: 720),
+            visibleFrame: CGRect(x: 1440, y: 0, width: 1280, height: 695))
+        let secondaryStatusFrame = CGRect(x: 2520, y: 696, width: 48, height: 22)
+        let resolvedVisibleFrame = StatusItemController.visibleFrameForTesting(
+            statusFrame: secondaryStatusFrame,
+            fallback: primary.visibleFrame,
+            screens: [primary, secondary])
+        guard resolvedVisibleFrame == secondary.visibleFrame else {
+            print("UI smoke failed: panel should resolve to status item's screen, got \(resolvedVisibleFrame)")
+            return false
+        }
+        let secondaryPanelFrame = StatusItemController.panelFrameForTesting(
+            statusFrame: secondaryStatusFrame,
+            visibleFrame: resolvedVisibleFrame,
+            preferredSize: preferredSize)
+        guard self.frame(secondaryPanelFrame, fitsInside: secondary.visibleFrame) else {
+            print("UI smoke failed: secondary-screen panel frame escaped visible screen: \(secondaryPanelFrame)")
+            return false
+        }
         return true
     }
 
@@ -228,12 +418,16 @@ enum UISmokeCheck {
             && frame.maxY <= visibleFrame.maxY
     }
 
-    private static func snapshot(sessionRemaining: Double, weeklyRemaining: Double) -> UsageSnapshot {
+    private static func snapshot(
+        sessionRemaining: Double?,
+        weeklyRemaining: Double,
+        sessionResetAt: Date? = nil) -> UsageSnapshot
+    {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         return UsageSnapshot(
             sessionPercentRemaining: sessionRemaining,
             weeklyPercentRemaining: weeklyRemaining,
-            sessionResetAt: now.addingTimeInterval(3_600),
+            sessionResetAt: sessionResetAt ?? now.addingTimeInterval(3_600),
             weeklyResetAt: now.addingTimeInterval(86_400),
             source: .fixture,
             updatedAt: now)
@@ -281,19 +475,32 @@ enum UISmokeCheck {
     }
 }
 
+private enum SequencedProviderStep: Sendable {
+    case snapshot(UsageSnapshot)
+    case failure(String)
+}
+
 private actor SequencedUsageProvider: CodexUsageProviding {
-    private var snapshots: [UsageSnapshot]
+    private var steps: [SequencedProviderStep]
     private var lastSnapshot: UsageSnapshot?
 
     init(snapshots: [UsageSnapshot]) {
-        self.snapshots = snapshots
+        self.steps = snapshots.map { .snapshot($0) }
+    }
+
+    init(steps: [SequencedProviderStep]) {
+        self.steps = steps
     }
 
     func fetchUsage() async throws -> UsageSnapshot {
-        if !self.snapshots.isEmpty {
-            let snapshot = self.snapshots.removeFirst()
-            self.lastSnapshot = snapshot
-            return snapshot
+        if !self.steps.isEmpty {
+            switch self.steps.removeFirst() {
+            case let .snapshot(snapshot):
+                self.lastSnapshot = snapshot
+                return snapshot
+            case let .failure(message):
+                throw ClaudeUsageProviderError.processFailed(message)
+            }
         }
         if let lastSnapshot {
             return lastSnapshot

@@ -4,20 +4,28 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 APP_NAME="QuotaPulse"
 BUNDLE_ID="${QUOTA_PULSE_BUNDLE_ID:-app.quotapulse.local}"
-APP_VERSION="${QUOTA_PULSE_APP_VERSION:-0.1.0}"
-APP_BUILD="${QUOTA_PULSE_APP_BUILD:-1}"
+APP_VERSION="${QUOTA_PULSE_APP_VERSION:-0.2.0}"
+APP_BUILD="${QUOTA_PULSE_APP_BUILD:-2}"
 DIST_DIR="$ROOT_DIR/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
-CONTENTS_DIR="$APP_DIR/Contents"
+STAGE_APP_DIR="$DIST_DIR/.$APP_NAME.app.stage.$$"
+CONTENTS_DIR="$STAGE_APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 BINARY_NAME="QuotaPulse"
 COMMAND_LAUNCHER="$DIST_DIR/Run QuotaPulse.command"
+CODESIGN_IDENTITY="${QUOTA_PULSE_CODESIGN_IDENTITY:-}"
+REQUIRE_CODESIGN="${QUOTA_PULSE_REQUIRE_CODESIGN:-0}"
+
+cleanup() {
+    rm -rf "$STAGE_APP_DIR"
+}
+trap cleanup EXIT HUP INT TERM
 
 cd "$ROOT_DIR"
 swift build --product "$BINARY_NAME"
 
-rm -rf "$APP_DIR"
+rm -rf "$STAGE_APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 cp "$ROOT_DIR/.build/debug/$BINARY_NAME" "$MACOS_DIR/$BINARY_NAME"
@@ -66,6 +74,28 @@ PLIST
 
 printf 'APPL????' > "$CONTENTS_DIR/PkgInfo"
 
+if [ -n "$CODESIGN_IDENTITY" ]; then
+    echo "Signing app with local identity: $CODESIGN_IDENTITY"
+    codesign --force --deep --sign "$CODESIGN_IDENTITY" \
+        --identifier "$BUNDLE_ID" \
+        --timestamp=none \
+        "$STAGE_APP_DIR"
+elif [ "$REQUIRE_CODESIGN" = "1" ]; then
+    echo "ERROR: QUOTA_PULSE_REQUIRE_CODESIGN=1 but QUOTA_PULSE_CODESIGN_IDENTITY is not set." >&2
+    exit 1
+else
+    echo "Signing app ad-hoc. Set QUOTA_PULSE_CODESIGN_IDENTITY for stable local signing."
+    codesign --force --deep --sign - \
+        --identifier "$BUNDLE_ID" \
+        --timestamp=none \
+        "$STAGE_APP_DIR"
+fi
+
+codesign --verify --deep --strict --verbose=2 "$STAGE_APP_DIR"
+
+rm -rf "$APP_DIR"
+mv "$STAGE_APP_DIR" "$APP_DIR"
+
 cat > "$COMMAND_LAUNCHER" <<EOF
 #!/bin/sh
 cd "$ROOT_DIR"
@@ -73,6 +103,11 @@ exec "$ROOT_DIR/Scripts/run_practical.sh"
 EOF
 chmod 755 "$COMMAND_LAUNCHER"
 
-echo "Packaged unsigned app: $APP_DIR"
+if [ -n "$CODESIGN_IDENTITY" ]; then
+    echo "Packaged local-signed app: $APP_DIR"
+else
+    echo "Packaged ad-hoc signed app: $APP_DIR"
+fi
 echo "Bundle identifier: $BUNDLE_ID"
+codesign -dv "$APP_DIR" 2>&1 | sed -n '/^Identifier=/p;/^Signature=/p;/^Authority=/p;/^TeamIdentifier=/p'
 echo "Double-click launcher: $COMMAND_LAUNCHER"

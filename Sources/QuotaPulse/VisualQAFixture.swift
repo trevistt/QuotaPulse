@@ -91,11 +91,10 @@ private struct VisualQAFixtureView: View {
             HoverPanelView(
                 codexStore: self.codexStore,
                 claudeStore: self.claudeStore,
-                cadence: self.scheduler.cadence,
+                scheduler: self.scheduler,
                 isPinned: true,
                 onRefresh: {},
                 onTogglePin: {},
-                onCadenceChange: { _ in },
                 onQuit: {})
         }
         .padding(28)

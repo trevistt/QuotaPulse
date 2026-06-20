@@ -2,7 +2,7 @@
 
 ## Supported Use
 
-QuotaPulse is currently intended for local builds by users who understand their local Codex and Claude authentication setup. The packaged app produced by this repository is unsigned and not notarized.
+QuotaPulse is currently intended for local builds by users who understand their local Codex and Claude authentication setup. The packaged app produced by this repository is ad-hoc signed by default, but it is not Developer ID signed and not notarized.
 
 ## Credential Handling
 
@@ -15,6 +15,16 @@ QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN=1
 ```
 
 Claude CLI fallback is disabled by the standard launcher. The explicit fallback launcher warns before enabling it because Claude CLI may update local Claude state.
+
+## Local Signing and Keychain Prompts
+
+Ad-hoc signing is useful for local app bundle validation, but it does not create a stable official release identity. Rebuilding an ad-hoc signed app can change the code identity that macOS Keychain remembers, so macOS may ask again before allowing Claude Code Keychain access.
+
+If you need fewer local Keychain prompts, package with your own local signing identity through `QUOTA_PULSE_CODESIGN_IDENTITY`. This repository does not include or recommend committing any personal signing identity name.
+
+Do not mutate Keychain access-control lists as a workaround. Do not copy or store Claude credentials to bypass Keychain prompts.
+
+Official public releases should use Apple Developer ID signing and notarization.
 
 ## Reporting Security Issues
 

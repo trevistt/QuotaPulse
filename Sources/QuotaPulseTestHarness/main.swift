@@ -27,6 +27,7 @@ private final class Harness {
         await self.run("UsageSnapshot weekly-only is not primary", self.weeklyOnlyNotPrimary)
         await self.run("UsageSnapshot legacy cache decoding", self.usageSnapshotLegacyCacheDecoding)
         await self.run("UsagePace reserve and deficit", self.usagePaceReserveAndDeficit)
+        await self.run("Stale auth failure menu bar formatter", self.staleAuthFailureMenuBarFormatter)
         await self.run("Secret sanitization", self.secretSanitization)
         await self.run("QuotaPulse legacy env aliases", self.quotaPulseLegacyEnvAliases)
         await self.run("OAuth credentials parsing", self.oauthCredentialsParsing)
@@ -40,6 +41,9 @@ private final class Harness {
         await self.run("Claude OAuth usage mapping", self.claudeOAuthUsageMapping)
         await self.run("Claude OAuth extra windows mapping", self.claudeOAuthExtraWindowsMapping)
         await self.run("Claude OAuth request headers", self.claudeOAuthRequestHeaders)
+        await self.run("Claude OAuth credential reload retry", self.claudeOAuthCredentialReloadRetry)
+        await self.run("Claude OAuth credential reload bounded failure", self.claudeOAuthCredentialReloadBoundedFailure)
+        await self.run("Claude OAuth rate limit cooldown", self.claudeOAuthRateLimitCooldown)
         await self.run("Claude source planner", self.claudeSourcePlanner)
         await self.run("Claude OAuth rate limit cache", self.claudeOAuthRateLimitCache)
         await self.run("Claude weekly-only is not primary", self.claudeWeeklyOnlyNotPrimary)
@@ -56,7 +60,17 @@ private final class Harness {
         await self.run("Local fallback session scan", self.localFallbackSessionScan)
         await self.run("Refresh cadence and backoff", self.refreshCadenceAndBackoff)
         await self.run("Refresh gate no-overlap", self.refreshGateNoOverlap)
+        await self.run("Refresh jitter bounds", self.refreshJitterBounds)
+        await self.run("Smart Refresh separate provider modes", self.smartRefreshSeparateProviderModes)
+        await self.run("Smart Refresh auto policy", self.smartRefreshAutoPolicy)
+        await self.run("Smart Refresh presence pause and wake", self.smartRefreshPresencePauseAndWake)
+        await self.run("Smart Refresh Claude unchanged baseline", self.smartRefreshClaudeUnchangedBaseline)
+        await self.run("Smart Refresh manual cooldown skip", self.smartRefreshManualCooldownSkip)
+        await self.run("Smart Refresh countdown text updates from supplied time", self.smartRefreshCountdownTextUsesSuppliedNow)
+        await self.run("Smart Refresh scheduler debounce", self.smartRefreshSchedulerDebounce)
+        await self.run("UsageStore refresh feedback debounce", self.usageStoreRefreshFeedbackDebounce)
         await self.run("UsageStore stale last-good", self.usageStoreStaleLastGood)
+        await self.run("Codex refresh while Claude rate-limited", self.codexRefreshWhileClaudeRateLimited)
         await self.run("Dual-provider independent failure", self.dualProviderIndependentFailure)
         await self.run("Dual-provider title formatter", self.dualProviderTitleFormatter)
     }
@@ -153,6 +167,68 @@ private final class Harness {
         try self.expect(UsagePaceFormatter.balanceText(deficitPace) == "25% in deficit", "deficit text")
         try self.expect(!deficitPace.lastsUntilReset, "deficit projects empty before reset")
         try self.expect(UsagePaceFormatter.expectedUsedText(deficitPace) == "Expected 50% used", "expected text")
+    }
+
+    private func staleAuthFailureMenuBarFormatter() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let codex = UsageSnapshot(
+            sessionPercentRemaining: 63,
+            weeklyPercentRemaining: 39,
+            sessionResetAt: nil,
+            weeklyResetAt: nil,
+            source: .oauth,
+            updatedAt: now)
+        let healthyClaude = UsageSnapshot(
+            sessionPercentRemaining: 92,
+            weeklyPercentRemaining: 82,
+            sessionResetAt: now.addingTimeInterval(3_600),
+            weeklyResetAt: nil,
+            source: .oauth,
+            updatedAt: now)
+        let staleClaude = UsageSnapshot(
+            sessionPercentRemaining: 89,
+            weeklyPercentRemaining: 82,
+            sessionResetAt: now.addingTimeInterval(3_600),
+            weeklyResetAt: nil,
+            source: .oauth,
+            updatedAt: now)
+            .markedStale(errorMessage: "Claude OAuth usage failed: OAuth unauthorized; run Claude to refresh login.")
+        let expiredClaude = UsageSnapshot(
+            sessionPercentRemaining: 89,
+            weeklyPercentRemaining: 82,
+            sessionResetAt: now.addingTimeInterval(-1),
+            weeklyResetAt: nil,
+            source: .oauth,
+            updatedAt: now)
+            .markedStale(errorMessage: "Claude OAuth usage failed: OAuth unauthorized; run Claude to refresh login.")
+        let missingClaude = UsageSnapshot(
+            sessionPercentRemaining: nil,
+            weeklyPercentRemaining: 82,
+            sessionResetAt: nil,
+            weeklyResetAt: nil,
+            source: .oauth,
+            updatedAt: now)
+            .markedStale(errorMessage: "Claude OAuth usage failed: OAuth unauthorized; run Claude to refresh login.")
+
+        try self.expect(staleClaude.hasAuthFailureError, "Claude stale auth failure is detected")
+        try self.expect(staleClaude.hasStaleAuthFailure, "Claude stale auth failure state is detected")
+        try self.expect(staleClaude.hasUsableCachedSessionPercent(now: now), "Claude stale auth cached session is usable before reset")
+
+        let healthyCompact = UsageDisplayFormatter.menuBarCompactText(codex: codex, claude: healthyClaude, now: now)
+        try self.expect(healthyCompact.contains("Cl 92%"), "healthy Claude renders percent")
+
+        let staleCompact = UsageDisplayFormatter.menuBarCompactText(codex: codex, claude: staleClaude, now: now)
+        try self.expect(staleCompact.contains("Cx 63%"), "Codex remains visible during Claude auth failure")
+        try self.expect(staleCompact.contains("Cl 89!"), "Claude stale auth failure renders stale-marked cached value")
+        try self.expect(!staleCompact.contains("Cl 89%"), "Claude stale auth failure does not render old percentage as live")
+        try self.expect(!staleCompact.contains("Cl ERR"), "Claude stale auth with usable cache does not render ERR")
+
+        let expiredCompact = UsageDisplayFormatter.menuBarCompactText(codex: codex, claude: expiredClaude, now: now)
+        try self.expect(expiredCompact.contains("Cl ERR"), "expired cached Claude session renders ERR")
+        try self.expect(!expiredCompact.contains("Cl 89!"), "expired cached Claude session does not render stale marker")
+
+        let missingCompact = UsageDisplayFormatter.menuBarCompactText(codex: codex, claude: missingClaude, now: now)
+        try self.expect(missingCompact.contains("Cl ERR"), "missing cached Claude session renders ERR")
     }
 
     private func secretSanitization() async throws {
@@ -452,6 +528,116 @@ private final class Harness {
         try self.expect(
             OAuthClaudeUsageProvider<StubHTTPClient>.claudeCodeUserAgent(env: [:]) == "claude-code/2.1.0",
             "Claude OAuth User-Agent has fallback version")
+    }
+
+    private func claudeOAuthCredentialReloadRetry() async throws {
+        let resolver = SequencedClaudeCredentialResolver(records: [
+            Self.claudeCredentialRecord(accessToken: "old-credential"),
+            Self.claudeCredentialRecord(accessToken: "new-credential"),
+        ])
+        let client = SequencedHTTPClient(responses: [
+            (401, "{}"),
+            (200, #"{"five_hour":{"utilization":20,"resets_at":"2027-01-15T03:12:00Z"}}"#),
+        ])
+        let provider = ReloadingClaudeOAuthUsageProvider(
+            env: ["QUOTA_PULSE_CLAUDE_USAGE_URL": "https://example.test/claude-usage"],
+            httpClient: client,
+            credentialResolver: resolver,
+            now: { Date(timeIntervalSince1970: 1_800_000_000) })
+
+        let snapshot = try await provider.fetchUsage()
+
+        try self.expect(snapshot.source == .oauth, "reloaded credential retry keeps OAuth source")
+        try self.expect(snapshot.sessionPercentRemaining == 80, "reloaded credential retry succeeds")
+        try self.expect(resolver.loadCount == 2, "credentials are reloaded after unauthorized")
+        try self.expect(client.requestCount == 2, "OAuth request is retried once")
+        try self.expect(client.authorizationValues.count == 2, "retry uses two credential attempts")
+        try self.expect(client.authorizationValues.first != client.authorizationValues.last, "retry uses reloaded credential")
+    }
+
+    private func claudeOAuthCredentialReloadBoundedFailure() async throws {
+        let resolver = SequencedClaudeCredentialResolver(records: [
+            Self.claudeCredentialRecord(accessToken: "old-credential"),
+            Self.claudeCredentialRecord(accessToken: "still-expired-credential"),
+            Self.claudeCredentialRecord(accessToken: "unused-credential"),
+        ])
+        let client = SequencedHTTPClient(responses: [
+            (401, "{}"),
+            (401, "{}"),
+            (200, #"{"five_hour":{"utilization":20,"resets_at":"2027-01-15T03:12:00Z"}}"#),
+        ])
+        let provider = ReloadingClaudeOAuthUsageProvider(
+            env: ["QUOTA_PULSE_CLAUDE_USAGE_URL": "https://example.test/claude-usage"],
+            httpClient: client,
+            credentialResolver: resolver,
+            now: { Date(timeIntervalSince1970: 1_800_000_000) })
+
+        do {
+            _ = try await provider.fetchUsage()
+            throw HarnessFailure("expected bounded Claude OAuth retry failure")
+        } catch {
+            let message = error.localizedDescription
+            try self.expect(UsageSnapshot.isAuthFailureMessage(message), "bounded retry surfaces auth failure")
+            try self.expect(client.requestCount == 2, "bounded retry stops after one retry")
+            try self.expect(resolver.loadCount == 2, "bounded retry reloads credentials once")
+            try self.expect(!message.contains("old-credential"), "bounded retry error redacts first credential")
+            try self.expect(!message.contains("still-expired-credential"), "bounded retry error redacts reloaded credential")
+        }
+    }
+
+    private func claudeOAuthRateLimitCooldown() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let resolver = SequencedClaudeCredentialResolver(records: [
+            Self.claudeCredentialRecord(accessToken: "rate-limit-credential"),
+        ])
+        let client = SequencedHTTPClient(responsesWithHeaders: [
+            (
+                200,
+                #"{"five_hour":{"utilization":0,"resets_at":"2027-01-15T03:12:00Z"}}"#,
+                [:]
+            ),
+            (
+                429,
+                "{}",
+                ["Retry-After": "120"]
+            ),
+            (
+                200,
+                #"{"five_hour":{"utilization":40,"resets_at":"2027-01-15T03:12:00Z"}}"#,
+                [:]
+            ),
+        ])
+        let provider = ReloadingClaudeOAuthUsageProvider(
+            env: ["QUOTA_PULSE_CLAUDE_USAGE_URL": "https://example.test/claude-usage"],
+            httpClient: client,
+            credentialResolver: resolver,
+            now: { clock.now })
+        let store = UsageStore(provider: provider, cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+
+        let initialRefresh = await store.refresh()
+        try self.expect(initialRefresh, "initial Claude OAuth refresh succeeds")
+        try self.expect(store.snapshot.sessionPercentRemaining == 100, "initial Claude value is cached")
+
+        let rateLimitedRefresh = await store.refresh()
+        try self.expect(rateLimitedRefresh, "429 refresh completes as stale failure")
+        try self.expect(store.snapshot.isStale, "429 marks Claude snapshot stale")
+        try self.expect(store.snapshot.sessionPercentRemaining == 100, "429 preserves last good Claude value")
+        try self.expect(store.snapshot.hasRateLimitError, "429 snapshot has rate-limit error")
+        try self.expect(store.snapshot.errorMessage?.contains("Rate limited. Try again in 2m.") == true, "Retry-After cooldown is shown")
+        try self.expect(client.requestCount == 2, "429 performs the second OAuth request")
+
+        clock.now = clock.now.addingTimeInterval(60)
+        let cooldownRefresh = await store.refresh()
+        try self.expect(cooldownRefresh, "cooldown refresh completes as local stale failure")
+        try self.expect(client.requestCount == 2, "cooldown refresh does not call Claude OAuth")
+        try self.expect(store.snapshot.errorMessage?.contains("Rate limited. Try again in 1m.") == true, "cooldown countdown is updated")
+
+        clock.now = clock.now.addingTimeInterval(61)
+        let afterCooldownRefresh = await store.refresh()
+        try self.expect(afterCooldownRefresh, "cooldown expiry allows refresh")
+        try self.expect(client.requestCount == 3, "cooldown expiry calls Claude OAuth again")
+        try self.expect(!store.snapshot.isStale, "successful refresh clears stale state")
+        try self.expect(store.snapshot.sessionPercentRemaining == 60, "successful refresh updates Claude value")
     }
 
     private func claudeSourcePlanner() async throws {
@@ -763,6 +949,240 @@ private final class Harness {
         try self.expect(firstResult == true, "first refresh ran")
     }
 
+    private func refreshJitterBounds() async throws {
+        let minimum = RefreshJitter(randomUnit: { 0 })
+        let maximum = RefreshJitter(randomUnit: { 1 })
+        let cases: [(TimeInterval, TimeInterval)] = [
+            (30, 5),
+            (60, 10),
+            (300, 30),
+            (600, 60),
+        ]
+        for (base, bound) in cases {
+            try self.expect(minimum.delay(base: base) == base - bound, "minimum jitter for \(base)")
+            try self.expect(maximum.delay(base: base) == base + bound, "maximum jitter for \(base)")
+        }
+        try self.expect(RefreshJitter(randomUnit: { 0 }).delay(base: 2) == 1, "jitter never goes below one second")
+    }
+
+    private func smartRefreshSeparateProviderModes() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let codexStore = UsageStore(
+            provider: FixtureCodexUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let claudeStore = UsageStore(
+            provider: FixtureClaudeUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let scheduler = RefreshScheduler(
+            stores: [codexStore, claudeStore],
+            jitter: .none,
+            now: { clock.now })
+
+        scheduler.setMode(.seconds30, for: .codex)
+        scheduler.setMode(.tenMinutes, for: .claude)
+
+        try self.expect(scheduler.mode(for: .codex) == .seconds30, "Codex mode is independent")
+        try self.expect(scheduler.mode(for: .claude) == .tenMinutes, "Claude mode is independent")
+        try self.expect(Self.secondsUntil(scheduler.codexState.nextRefreshAt, from: clock.now) == 30, "Codex next refresh uses 30s")
+        try self.expect(Self.secondsUntil(scheduler.claudeState.nextRefreshAt, from: clock.now) == 600, "Claude next refresh uses 10m")
+
+        scheduler.setMode(.manual, for: .claude)
+        try self.expect(scheduler.claudeState.nextRefreshAt == nil, "Claude manual mode has no automatic next refresh")
+    }
+
+    private func smartRefreshAutoPolicy() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let codexStore = UsageStore(
+            provider: FixtureCodexUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let claudeStore = UsageStore(
+            provider: FixtureClaudeUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let scheduler = RefreshScheduler(
+            stores: [codexStore, claudeStore],
+            jitter: .none,
+            now: { clock.now })
+
+        scheduler.setMode(.auto, for: .codex)
+        scheduler.setMode(.auto, for: .claude)
+        try self.expect(Self.secondsUntil(scheduler.codexState.nextRefreshAt, from: clock.now) == 30, "Codex Auto active uses fast refresh")
+        try self.expect(Self.secondsUntil(scheduler.claudeState.nextRefreshAt, from: clock.now) == 300, "Claude Auto baseline is 5m")
+
+        scheduler.setDashboardVisible(true)
+        try self.expect(Self.secondsUntil(scheduler.claudeState.nextRefreshAt, from: clock.now) == 30, "Claude Auto watching dashboard can use fast refresh")
+
+        scheduler.updatePresence(.idle)
+        try self.expect(Self.secondsUntil(scheduler.codexState.nextRefreshAt, from: clock.now) == 60, "Codex Auto idle slows to 1m")
+        try self.expect(Self.secondsUntil(scheduler.claudeState.nextRefreshAt, from: clock.now) == 300, "Claude Auto idle uses baseline")
+    }
+
+    private func smartRefreshPresencePauseAndWake() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let codexStore = UsageStore(
+            provider: FixtureCodexUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let claudeStore = UsageStore(
+            provider: FixtureClaudeUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let scheduler = RefreshScheduler(
+            stores: [codexStore, claudeStore],
+            jitter: .none,
+            now: { clock.now })
+
+        scheduler.setMode(.auto, for: .codex)
+        scheduler.setMode(.auto, for: .claude)
+        scheduler.updatePresence(.locked)
+        try self.expect(scheduler.summaryText == "Paused: screen locked", "locked state reports paused")
+        try self.expect(scheduler.codexState.nextRefreshAt == nil, "locked pauses Codex auto refresh")
+        try self.expect(scheduler.claudeState.nextRefreshAt == nil, "locked pauses Claude auto refresh")
+
+        scheduler.updatePresence(.active)
+        try self.expect(Self.secondsUntil(scheduler.codexState.nextRefreshAt, from: clock.now) == 6, "unlock schedules delayed Codex refresh")
+        try self.expect(Self.secondsUntil(scheduler.claudeState.nextRefreshAt, from: clock.now) == 6, "unlock schedules delayed Claude refresh")
+
+        scheduler.updatePresence(.asleep)
+        try self.expect(scheduler.summaryText == "Paused: asleep", "display sleep reports paused")
+    }
+
+    private func smartRefreshClaudeUnchangedBaseline() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let codexStore = UsageStore(
+            provider: FixtureCodexUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let claudeStore = UsageStore(
+            provider: FixtureClaudeUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let scheduler = RefreshScheduler(
+            stores: [codexStore, claudeStore],
+            jitter: .none,
+            now: { clock.now })
+        scheduler.setDashboardVisible(true)
+
+        await scheduler.refreshProviderForTesting(ProviderKind.claude)
+        await scheduler.refreshProviderForTesting(ProviderKind.claude)
+        await scheduler.refreshProviderForTesting(ProviderKind.claude)
+        await scheduler.refreshProviderForTesting(ProviderKind.claude)
+
+        try self.expect(scheduler.claudeState.unchangedSuccesses >= 3, "Claude unchanged successful polls are counted")
+        try self.expect(Self.secondsUntil(scheduler.claudeState.nextRefreshAt, from: clock.now) == 300, "Claude returns to 5m after unchanged polls")
+    }
+
+    private func smartRefreshManualCooldownSkip() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let resolver = SequencedClaudeCredentialResolver(records: [
+            Self.claudeCredentialRecord(accessToken: "rate-limit-credential"),
+        ])
+        let client = SequencedHTTPClient(responsesWithHeaders: [
+            (
+                200,
+                #"{"five_hour":{"utilization":0,"resets_at":"2027-01-15T03:12:00Z"}}"#,
+                [:]
+            ),
+            (
+                429,
+                "{}",
+                ["Retry-After": "120"]
+            ),
+        ])
+        let codexStore = UsageStore(
+            provider: FixtureCodexUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let claudeProvider = ReloadingClaudeOAuthUsageProvider(
+            env: ["QUOTA_PULSE_CLAUDE_USAGE_URL": "https://example.test/claude-usage"],
+            httpClient: client,
+            credentialResolver: resolver,
+            now: { clock.now })
+        let claudeStore = UsageStore(provider: claudeProvider, cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let scheduler = RefreshScheduler(
+            stores: [codexStore, claudeStore],
+            jitter: .none,
+            now: { clock.now })
+
+        await scheduler.refreshProviderForTesting(.claude)
+        await scheduler.refreshProviderForTesting(.claude)
+        try self.expect(client.requestCount == 2, "Claude OAuth sees initial success and 429")
+        try self.expect(scheduler.claudeState.cooldownUntil != nil, "scheduler records Claude cooldown")
+
+        scheduler.refresh(provider: .claude, manual: true)
+        try self.expect(client.requestCount == 2, "manual refresh during cooldown does not call Claude OAuth")
+        try self.expect(scheduler.summaryText.contains("Claude cooldown"), "manual cooldown skip is visible")
+    }
+
+    private func smartRefreshCountdownTextUsesSuppliedNow() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let codexStore = UsageStore(
+            provider: FixtureCodexUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let claudeStore = UsageStore(
+            provider: FixtureClaudeUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let scheduler = RefreshScheduler(
+            stores: [codexStore, claudeStore],
+            jitter: .none,
+            now: { clock.now })
+
+        scheduler.setMode(.seconds30, for: .codex)
+        scheduler.setMode(.fiveMinutes, for: .claude)
+
+        try self.expect(
+            scheduler.summaryText(now: clock.now).contains("Codex 30s"),
+            "countdown starts at scheduled delay")
+        try self.expect(
+            scheduler.nextText(for: .codex, now: clock.now.addingTimeInterval(7)) == "23s",
+            "countdown text updates when the view supplies a later time")
+        try self.expect(
+            scheduler.summaryText(now: clock.now.addingTimeInterval(7)).contains("Codex 23s"),
+            "summary text uses supplied render time")
+    }
+
+    private func smartRefreshSchedulerDebounce() async throws {
+        let provider = DelayedCountingProvider(delayNanoseconds: 150_000_000)
+        let store = UsageStore(provider: provider, cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let scheduler = RefreshScheduler(stores: [store], jitter: .none)
+        scheduler.setMode(.manual, for: .codex)
+
+        scheduler.refresh(provider: .codex, manual: true)
+        try self.expect(scheduler.codexState.isRefreshing, "scheduler enters refreshing state immediately")
+
+        scheduler.refresh(provider: .codex, manual: true)
+        try self.expect(scheduler.codexState.isRefreshing, "duplicate refresh keeps scheduler refreshing")
+
+        let deadline = Date().addingTimeInterval(1)
+        while await provider.count() == 0, Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let startedFetchCount = await provider.count()
+        try self.expect(startedFetchCount == 1, "only one provider fetch starts during duplicate refresh")
+
+        scheduler.refresh(provider: .codex, manual: true)
+        try self.expect(scheduler.codexState.isRefreshing, "duplicate refresh after fetch start stays refreshing")
+        try await Task.sleep(nanoseconds: 220_000_000)
+        let completedFetchCount = await provider.count()
+        try self.expect(completedFetchCount == 1, "duplicate refresh does not start another provider fetch")
+        try self.expect(!scheduler.codexState.isRefreshing, "scheduler exits refreshing after original fetch finishes")
+        try self.expect(store.snapshot.sessionPercentRemaining == 73, "original fetch stores latest snapshot")
+    }
+
+    private func usageStoreRefreshFeedbackDebounce() async throws {
+        let store = UsageStore(
+            provider: DelayedProvider(delayNanoseconds: 150_000_000),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+
+        async let firstRefresh = store.refresh()
+        let deadline = Date().addingTimeInterval(1)
+        while !store.isRefreshing, Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        try self.expect(store.isRefreshing, "store enters visible refreshing state")
+        let secondRefresh = await store.refresh()
+        try self.expect(!secondRefresh, "repeated refresh is ignored while running")
+        let firstResult = await firstRefresh
+        try self.expect(firstResult, "first refresh completes")
+        try self.expect(!store.isRefreshing, "store exits refreshing state")
+        try self.expect(store.snapshot.sessionPercentRemaining == 74, "refresh stores latest snapshot")
+    }
+
     private func usageStoreStaleLastGood() async throws {
         let cacheURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("quota-pulse-cache-\(UUID().uuidString).json")
@@ -774,6 +1194,49 @@ private final class Harness {
         try self.expect(store.snapshot.isStale, "failed refresh marks stale")
         try self.expect(store.snapshot.sessionPercentRemaining == good.sessionPercentRemaining, "last good retained")
         try self.expect(store.consecutiveFailures == 1, "failure counted")
+    }
+
+    private func codexRefreshWhileClaudeRateLimited() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let codexProvider = CountingProvider()
+        let claudeResolver = SequencedClaudeCredentialResolver(records: [
+            Self.claudeCredentialRecord(accessToken: "rate-limit-credential"),
+        ])
+        let claudeClient = SequencedHTTPClient(responsesWithHeaders: [
+            (
+                200,
+                #"{"five_hour":{"utilization":10,"resets_at":"2027-01-15T03:12:00Z"}}"#,
+                [:]
+            ),
+            (
+                429,
+                "{}",
+                ["Retry-After": "300"]
+            ),
+        ])
+        let claudeProvider = ReloadingClaudeOAuthUsageProvider(
+            env: ["QUOTA_PULSE_CLAUDE_USAGE_URL": "https://example.test/claude-usage"],
+            httpClient: claudeClient,
+            credentialResolver: claudeResolver,
+            now: { clock.now })
+        let codexStore = UsageStore(provider: codexProvider, cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let claudeStore = UsageStore(provider: claudeProvider, cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+
+        let initialCodexRefresh = await codexStore.refresh()
+        let initialClaudeRefresh = await claudeStore.refresh()
+        try self.expect(initialCodexRefresh, "initial Codex refresh succeeds")
+        try self.expect(initialClaudeRefresh, "initial Claude refresh succeeds")
+
+        let secondCodexRefresh = await codexStore.refresh()
+        let secondClaudeRefresh = await claudeStore.refresh()
+        let codexFetchCount = await codexProvider.count()
+        try self.expect(secondCodexRefresh, "Codex refresh succeeds while Claude becomes rate-limited")
+        try self.expect(secondClaudeRefresh, "Claude rate-limit refresh completes as stale failure")
+        try self.expect(codexFetchCount == 2, "Codex provider is called independently")
+        try self.expect(codexStore.snapshot.sessionPercentRemaining == 88, "Codex snapshot updates while Claude is rate-limited")
+        try self.expect(claudeStore.snapshot.isStale, "Claude snapshot is stale after rate limit")
+        try self.expect(claudeStore.snapshot.sessionPercentRemaining == 90, "Claude stale snapshot preserves last good value")
+        try self.expect(claudeClient.requestCount == 2, "Claude OAuth was only called for initial and 429 attempts")
     }
 
     private func dualProviderIndependentFailure() async throws {
@@ -824,10 +1287,24 @@ private final class Harness {
             .appendingPathComponent("quota-pulse-cache-\(UUID().uuidString).json")
     }
 
+    private static func secondsUntil(_ date: Date?, from now: Date) -> Int? {
+        date.map { Int(round($0.timeIntervalSince(now))) }
+    }
+
     private static func claudeCredentialsJSON(accessToken: String) -> String {
         """
         {"claudeAiOauth":{"accessToken":"\(accessToken)","refreshToken":"refresh","expiresAt":1800000000000,"scopes":["user:profile"]}}
         """
+    }
+
+    private static func claudeCredentialRecord(accessToken: String) -> ClaudeOAuthCredentialRecord {
+        ClaudeOAuthCredentialRecord(
+            credentials: ClaudeOAuthCredentials(
+                accessToken: accessToken,
+                refreshToken: nil,
+                expiresAt: nil,
+                scopes: ["user:profile"]),
+            source: .claudeCodeKeychain)
     }
 
     private static func makeStubCodex() throws -> URL {
@@ -998,6 +1475,46 @@ private actor CountingProvider: CodexUsageProviding {
     }
 }
 
+private actor DelayedCountingProvider: CodexUsageProviding {
+    private let delayNanoseconds: UInt64
+    private var fetchCount = 0
+
+    init(delayNanoseconds: UInt64) {
+        self.delayNanoseconds = delayNanoseconds
+    }
+
+    func fetchUsage() async throws -> UsageSnapshot {
+        self.fetchCount += 1
+        try await Task.sleep(nanoseconds: self.delayNanoseconds)
+        return UsageSnapshot(
+            sessionPercentRemaining: Double(74 - self.fetchCount),
+            weeklyPercentRemaining: 55,
+            sessionResetAt: nil,
+            weeklyResetAt: nil,
+            source: .fixture,
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_000 + Double(self.fetchCount)))
+    }
+
+    func count() -> Int {
+        self.fetchCount
+    }
+}
+
+private struct DelayedProvider: CodexUsageProviding, Sendable {
+    let delayNanoseconds: UInt64
+
+    func fetchUsage() async throws -> UsageSnapshot {
+        try await Task.sleep(nanoseconds: self.delayNanoseconds)
+        return UsageSnapshot(
+            sessionPercentRemaining: 74,
+            weeklyPercentRemaining: 55,
+            sessionResetAt: nil,
+            weeklyResetAt: nil,
+            source: .fixture,
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_000))
+    }
+}
+
 private final class StubHTTPClient: UsageHTTPClient, @unchecked Sendable {
     private let statusCode: Int
     private let body: String
@@ -1016,6 +1533,67 @@ private final class StubHTTPClient: UsageHTTPClient, @unchecked Sendable {
             httpVersion: nil,
             headerFields: nil)!
         return (Data(self.body.utf8), response)
+    }
+}
+
+private final class SequencedHTTPClient: UsageHTTPClient, @unchecked Sendable {
+    private struct Response {
+        let statusCode: Int
+        let body: String
+        let headers: [String: String]
+    }
+
+    private var responses: [Response]
+    private(set) var requests: [URLRequest] = []
+
+    init(responses: [(Int, String)]) {
+        self.responses = responses.map {
+            Response(statusCode: $0.0, body: $0.1, headers: [:])
+        }
+    }
+
+    init(responsesWithHeaders: [(Int, String, [String: String])]) {
+        self.responses = responsesWithHeaders.map {
+            Response(statusCode: $0.0, body: $0.1, headers: $0.2)
+        }
+    }
+
+    var requestCount: Int {
+        self.requests.count
+    }
+
+    var authorizationValues: [String] {
+        self.requests.compactMap { $0.value(forHTTPHeaderField: "Authorization") }
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        self.requests.append(request)
+        let responsePayload = self.responses.isEmpty
+            ? Response(statusCode: 500, body: "{}", headers: [:])
+            : self.responses.removeFirst()
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: responsePayload.statusCode,
+            httpVersion: nil,
+            headerFields: responsePayload.headers)!
+        return (Data(responsePayload.body.utf8), response)
+    }
+}
+
+private final class SequencedClaudeCredentialResolver: ClaudeOAuthCredentialResolving, @unchecked Sendable {
+    private var records: [ClaudeOAuthCredentialRecord]
+    private(set) var loadCount = 0
+
+    init(records: [ClaudeOAuthCredentialRecord]) {
+        self.records = records
+    }
+
+    func loadRecord(env: [String: String]) throws -> ClaudeOAuthCredentialRecord {
+        self.loadCount += 1
+        guard !self.records.isEmpty else {
+            throw ClaudeUsageProviderError.missingCredentials
+        }
+        return self.records.removeFirst()
     }
 }
 

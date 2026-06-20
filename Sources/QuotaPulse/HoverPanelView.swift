@@ -5,18 +5,18 @@ import SwiftUI
 struct HoverPanelView: View {
     @ObservedObject var codexStore: UsageStore
     @ObservedObject var claudeStore: UsageStore
-    let cadence: RefreshCadence
+    @ObservedObject var scheduler: RefreshScheduler
     let isPinned: Bool
     let maxPanelHeight: CGFloat
     let onRefresh: () -> Void
     let onTogglePin: () -> Void
-    let onCadenceChange: (RefreshCadence) -> Void
     let onQuit: () -> Void
     let onPreferredSizeChange: (CGSize) -> Void
 
     @State private var selectedTab: DashboardTab = .overview
     @State private var measuredTabBarHeight = DashboardLayout.defaultTabBarHeight
     @State private var measuredBodyHeight = DashboardLayout.defaultBodyHeight
+    @State private var countdownNow = Date()
 
     static var preferredContentSize: CGSize {
         self.preferredContentSize(maxHeight: DashboardLayout.defaultMaxPanelHeight)
@@ -25,23 +25,21 @@ struct HoverPanelView: View {
     init(
         codexStore: UsageStore,
         claudeStore: UsageStore,
-        cadence: RefreshCadence,
+        scheduler: RefreshScheduler,
         isPinned: Bool,
         maxPanelHeight: CGFloat = DashboardLayout.defaultMaxPanelHeight,
         onRefresh: @escaping () -> Void,
         onTogglePin: @escaping () -> Void,
-        onCadenceChange: @escaping (RefreshCadence) -> Void,
         onQuit: @escaping () -> Void,
         onPreferredSizeChange: @escaping (CGSize) -> Void = { _ in })
     {
         self.codexStore = codexStore
         self.claudeStore = claudeStore
-        self.cadence = cadence
+        self.scheduler = scheduler
         self.isPinned = isPinned
         self.maxPanelHeight = maxPanelHeight
         self.onRefresh = onRefresh
         self.onTogglePin = onTogglePin
-        self.onCadenceChange = onCadenceChange
         self.onQuit = onQuit
         self.onPreferredSizeChange = onPreferredSizeChange
     }
@@ -73,6 +71,23 @@ struct HoverPanelView: View {
                 maxHeight: maxHeight))
     }
 
+    static func stateMessageTextForTesting(provider: ProviderKind, snapshot: UsageSnapshot) -> String {
+        self.stateMessageText(provider: provider, snapshot: snapshot)
+    }
+
+    static func refreshControlTextForTesting(isRefreshing: Bool) -> String {
+        self.refreshControlText(isRefreshing: isRefreshing)
+    }
+
+    static func providerStatusTextForTesting(
+        provider: ProviderKind,
+        state: ProviderRefreshState,
+        now: Date = Date())
+        -> String
+    {
+        self.providerStatusText(provider: provider, state: state, now: now)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             self.tabBar
@@ -98,6 +113,10 @@ struct HoverPanelView: View {
         .foregroundStyle(.white)
         .onAppear {
             self.reportPreferredSize()
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { date in
+            guard self.isPinned || self.scheduler.dashboardVisible else { return }
+            self.countdownNow = date
         }
         .onChange(of: self.panelHeight) { _, _ in
             self.reportPreferredSize()
@@ -205,7 +224,7 @@ struct HoverPanelView: View {
                             .font(.system(size: 13, weight: .bold))
                         sourceBadge(snapshot)
                     }
-                    Text("Updated \(Self.timeText(snapshot.updatedAt))")
+                    Text(Self.updatedText(snapshot.updatedAt))
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.white.opacity(0.48))
                 }
@@ -247,7 +266,7 @@ struct HoverPanelView: View {
             }
 
             if snapshot.isStale || snapshot.errorMessage != nil {
-                stateMessage(snapshot)
+                stateMessage(provider: provider, snapshot: snapshot)
             }
         }
         .padding(11)
@@ -345,8 +364,8 @@ struct HoverPanelView: View {
             .foregroundStyle(snapshot.isStale ? Color.orange.opacity(0.95) : .white.opacity(0.70))
     }
 
-    private func stateMessage(_ snapshot: UsageSnapshot) -> some View {
-        let message = snapshot.errorMessage ?? "Usage is stale; showing the last good reading."
+    private func stateMessage(provider: ProviderKind, snapshot: UsageSnapshot) -> some View {
+        let message = Self.stateMessageText(provider: provider, snapshot: snapshot)
         return Text(message)
             .font(.system(size: 10, weight: .medium))
             .foregroundStyle(snapshot.errorMessage == nil ? Color.orange.opacity(0.92) : Color.red.opacity(0.9))
@@ -359,12 +378,37 @@ struct HoverPanelView: View {
                     .fill(Color.white.opacity(0.06)))
     }
 
+    private static func stateMessageText(provider: ProviderKind, snapshot: UsageSnapshot) -> String {
+        if provider == .claude, snapshot.hasStaleAuthFailure {
+            return UsageSnapshot.claudeLoginExpiredMessage
+        }
+        let message = snapshot.errorMessage ?? "Usage is stale; showing the last good reading."
+        if snapshot.isStale,
+           snapshot.hasRateLimitError,
+           snapshot.hasUsableCachedSessionPercent()
+        {
+            return "\(message) ! means stale cached value."
+        }
+        return message
+    }
+
     private var controls: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Button(action: self.onRefresh) {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label {
+                        Text(Self.refreshControlText(isRefreshing: self.isRefreshing))
+                    } icon: {
+                        if self.isRefreshing {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.58)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
                 }
+                .disabled(self.isRefreshing)
                 Button(action: self.onTogglePin) {
                     Label(self.isPinned ? "Unpin" : "Pin", systemImage: self.isPinned ? "pin.slash" : "pin")
                 }
@@ -377,22 +421,92 @@ struct HoverPanelView: View {
             .font(.system(size: 11, weight: .semibold))
 
             HStack(spacing: 6) {
-                ForEach(RefreshCadence.allCases) { option in
-                    Button(option.label) {
-                        self.onCadenceChange(option)
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10, weight: option == self.cadence ? .bold : .medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(
-                        Capsule()
-                            .fill(option == self.cadence ? Color.white.opacity(0.18) : Color.white.opacity(0.06)))
-                }
-                Spacer()
+                Text(self.scheduler.summaryText(now: self.countdownNow))
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.58))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.82)
+                Spacer(minLength: 0)
             }
+
+            self.smartRefreshRow(provider: .codex)
+            self.smartRefreshRow(provider: .claude)
         }
         .padding(.top, 2)
+    }
+
+    private func smartRefreshRow(provider: ProviderKind) -> some View {
+        let state = self.scheduler.state(for: provider)
+        return HStack(spacing: 6) {
+            ProviderBrandIconView(
+                provider: provider,
+                size: 10,
+                fallbackSystemImage: ProviderBrandIcon.fallbackSystemImage(for: provider))
+                .foregroundStyle(Self.accent(for: provider))
+                .frame(width: 12)
+            Text(provider.displayName)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.72))
+                .frame(width: 38, alignment: .leading)
+            Menu {
+                ForEach(RefreshMode.allowedModes(for: provider)) { mode in
+                    Button {
+                        self.scheduler.setMode(mode, for: provider)
+                    } label: {
+                        if mode == state.mode {
+                            Label(mode.label, systemImage: "checkmark")
+                        } else {
+                            Text(mode.label)
+                        }
+                    }
+                }
+            } label: {
+                Text(state.mode.label)
+                    .font(.system(size: 9.5, weight: .bold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(0.10)))
+                    .foregroundStyle(.white.opacity(0.86))
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            Spacer(minLength: 4)
+            Text(Self.providerStatusText(provider: provider, state: state, now: self.countdownNow))
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.white.opacity(0.56))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(height: 22)
+    }
+
+    private static func providerStatusText(
+        provider: ProviderKind,
+        state: ProviderRefreshState,
+        now: Date = Date())
+        -> String
+    {
+        if state.isRefreshing { return "Refreshing..." }
+        if let paused = state.pausedReason?.pausedText {
+            return paused.replacingOccurrences(of: "Paused: ", with: "Paused ")
+        }
+        if provider == .claude,
+           let cooldown = state.cooldownUntil,
+           cooldown > now
+        {
+            return "Cooldown \(RefreshScheduler.refreshCountdown(to: cooldown, now: now))"
+        }
+        if state.mode == .manual { return "Manual" }
+        if let next = state.nextRefreshAt {
+            return "Next \(RefreshScheduler.refreshCountdown(to: next, now: now))"
+        }
+        return state.lastStatusText
+    }
+
+    private var isRefreshing: Bool {
+        self.codexStore.isRefreshing || self.claudeStore.isRefreshing
     }
 
     private static func accent(for provider: ProviderKind) -> Color {
@@ -425,6 +539,17 @@ struct HoverPanelView: View {
         formatter.dateStyle = .none
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+
+    private static func updatedText(_ date: Date, now: Date = Date()) -> String {
+        if now.timeIntervalSince(date) < 60 {
+            return "Updated just now"
+        }
+        return "Updated \(Self.timeText(date))"
+    }
+
+    private static func refreshControlText(isRefreshing: Bool) -> String {
+        isRefreshing ? "Refreshing..." : "Refresh"
     }
 }
 

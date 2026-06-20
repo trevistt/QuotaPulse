@@ -30,7 +30,11 @@ Claude defaults:
 - No credential writes.
 - No OAuth credential refresh.
 - No GitHub automation.
-- No signing, notarization, or publishing workflow.
+- No notarization or publishing workflow.
+
+## User Presence
+
+Smart Refresh can use coarse local macOS presence signals to pause or slow automatic refreshes. It observes states such as active, idle, locked, screensaver, asleep, or suspended. These states stay local and are used only to schedule refreshes.
 
 ## Logs
 
@@ -51,6 +55,10 @@ Claude CLI fallback is disabled by default. If enabled explicitly, it may update
 ```
 
 Use it only if you understand and accept that local side effect.
+
+## Keychain Prompts
+
+Unsigned or ad-hoc signed local builds may cause macOS to ask for Keychain access again after rebuilds because the app identity may change. Stable local signing can reduce repeated prompts, but official public distribution should use Developer ID signing and notarization. QuotaPulse does not change Keychain access-control lists and does not copy Claude credentials as a workaround.
 
 ## Screenshots
 

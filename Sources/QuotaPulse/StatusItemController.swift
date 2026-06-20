@@ -22,6 +22,7 @@ final class StatusItemController: NSObject {
     private var isHoveringPopover = false
     private var currentPanelSize = HoverPanelView.preferredContentSize
     private var currentPanelMaxHeight = HoverPanelView.preferredContentSize.height
+    private var lastValidStatusFrame: CGRect?
 
     init(codexStore: UsageStore, claudeStore: UsageStore, scheduler: RefreshScheduler) {
         self.codexStore = codexStore
@@ -45,6 +46,11 @@ final class StatusItemController: NSObject {
                 self.latestClaudeSnapshot = snapshot
                 self.updateTitle()
                 self.refreshPopoverContent()
+            },
+            scheduler.objectWillChange.sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.refreshPopoverContent()
+                }
             },
         ]
         self.updateTitle()
@@ -122,6 +128,7 @@ final class StatusItemController: NSObject {
         }
         self.statusItem.button?.toolTip = nil
         self.statusItem.button?.setAccessibilityLabel(accessibilityText)
+        self.repositionVisiblePanel()
     }
 
     private func redrawMenuBarButton() {
@@ -138,12 +145,11 @@ final class StatusItemController: NSObject {
         let rootView = HoverPanelView(
             codexStore: self.codexStore,
             claudeStore: self.claudeStore,
-            cadence: self.scheduler.cadence,
+            scheduler: self.scheduler,
             isPinned: self.isPinned,
             maxPanelHeight: self.currentPanelMaxHeight,
             onRefresh: { [weak self] in self?.scheduler.refreshNow() },
             onTogglePin: { [weak self] in self?.togglePinned() },
-            onCadenceChange: { [weak self] cadence in self?.setCadence(cadence) },
             onQuit: { NSApp.terminate(nil) },
             onPreferredSizeChange: { [weak self] preferredSize in
                 self?.preferredPanelSizeChanged(preferredSize)
@@ -157,6 +163,7 @@ final class StatusItemController: NSObject {
         panel.contentViewController = controller
         panel.setContentSize(size)
         self.panel = panel
+        self.repositionVisiblePanel(preferredSize: size)
     }
 
     private func preferredPanelSizeChanged(_ preferredSize: CGSize) {
@@ -173,6 +180,17 @@ final class StatusItemController: NSObject {
     }
 
     private func statusItemHoverChanged(_ hovering: Bool) {
+        if self.isHoveringStatusItem == hovering {
+            if hovering {
+                self.closeWorkItem?.cancel()
+                if self.panel?.isVisible == true {
+                    self.repositionVisiblePanel()
+                } else {
+                    self.showPopover()
+                }
+            }
+            return
+        }
         self.isHoveringStatusItem = hovering
         hovering ? self.showPopover() : self.scheduleClose()
     }
@@ -185,6 +203,7 @@ final class StatusItemController: NSObject {
     private func showPopover() {
         self.closeWorkItem?.cancel()
         guard let button = self.statusItem.button else { return }
+        self.scheduler.setDashboardVisible(true)
         self.currentPanelMaxHeight = self.maxPanelHeight(relativeTo: button)
         self.refreshPopoverContent()
         self.positionPanel(relativeTo: button)
@@ -196,16 +215,81 @@ final class StatusItemController: NSObject {
               let window = button.window
         else { return }
 
-        let statusFrame = window.convertToScreen(button.convert(button.bounds, to: nil))
+        let statusFrame = self.statusFrame(relativeTo: button)
+            ?? self.lastValidStatusFrame
+            ?? Self.mouseFallbackStatusFrame()
+        guard let statusFrame else { return }
+        self.lastValidStatusFrame = statusFrame
         let preferredSize = preferredSize ?? self.currentPanelSize
-        let screenFrame = window.screen?.visibleFrame
-            ?? NSScreen.main?.visibleFrame
-            ?? .zero
+        let screenFrame = Self.visibleFrame(
+            containing: statusFrame,
+            fallback: window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
         let frame = StatusPanelPositioner.frame(
             statusFrame: statusFrame,
             visibleFrame: screenFrame,
             preferredSize: preferredSize)
         panel.setFrame(frame, display: true)
+    }
+
+    private func repositionVisiblePanel(preferredSize: CGSize? = nil) {
+        guard self.panel?.isVisible == true,
+              let button = self.statusItem.button
+        else { return }
+        self.currentPanelMaxHeight = self.maxPanelHeight(relativeTo: button)
+        self.positionPanel(relativeTo: button, preferredSize: preferredSize)
+    }
+
+    private func statusFrame(relativeTo button: NSStatusBarButton) -> CGRect? {
+        guard let window = button.window else { return nil }
+        button.needsLayout = true
+        button.layoutSubtreeIfNeeded()
+        let frame = window.convertToScreen(button.convert(button.bounds, to: nil))
+        return Self.isUsableStatusFrame(frame) ? frame : nil
+    }
+
+    private static func isUsableStatusFrame(_ frame: CGRect) -> Bool {
+        frame.width > 1
+            && frame.height > 1
+            && frame.origin.x.isFinite
+            && frame.origin.y.isFinite
+            && frame.width.isFinite
+            && frame.height.isFinite
+    }
+
+    private static func mouseFallbackStatusFrame() -> CGRect? {
+        let point = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(point) }
+            ?? NSScreen.main
+        guard let screen else { return nil }
+        let width: CGFloat = 44
+        let height: CGFloat = min(24, max(18, NSStatusBar.system.thickness))
+        let clampedX = min(max(point.x - width / 2, screen.frame.minX), screen.frame.maxX - width)
+        let fallbackY = min(max(point.y - height / 2, screen.frame.minY), screen.frame.maxY - height)
+        return CGRect(x: clampedX, y: fallbackY, width: width, height: height)
+    }
+
+    private static func visibleFrame(containing statusFrame: CGRect, fallback: CGRect?) -> CGRect {
+        let screenFrames = NSScreen.screens.map { PanelScreenFrame(frame: $0.frame, visibleFrame: $0.visibleFrame) }
+        return Self.visibleFrame(containing: statusFrame, fallback: fallback, screens: screenFrames)
+    }
+
+    private static func visibleFrame(
+        containing statusFrame: CGRect,
+        fallback: CGRect?,
+        screens: [PanelScreenFrame])
+        -> CGRect
+    {
+        let center = CGPoint(x: statusFrame.midX, y: statusFrame.midY)
+        if let screen = screens.first(where: { $0.frame.contains(center) }) {
+            return screen.visibleFrame
+        }
+        if let screen = screens.first(where: { $0.frame.intersects(statusFrame) }) {
+            return screen.visibleFrame
+        }
+        if let fallback {
+            return fallback
+        }
+        return NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 760, height: 760)
     }
 
     private func maxPanelHeight(relativeTo button: NSStatusBarButton) -> CGFloat {
@@ -224,6 +308,7 @@ final class StatusItemController: NSObject {
                   !self.isHoveringPopover
             else { return }
             self.panel?.orderOut(nil)
+            self.scheduler.setDashboardVisible(false)
         }
         self.closeWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: item)
@@ -235,11 +320,6 @@ final class StatusItemController: NSObject {
         if self.isPinned {
             self.showPopover()
         }
-    }
-
-    private func setCadence(_ cadence: RefreshCadence) {
-        self.scheduler.setCadence(cadence)
-        self.refreshPopoverContent()
     }
 
     func titleForTesting() -> String {
@@ -311,6 +391,15 @@ final class StatusItemController: NSObject {
             preferredSize: preferredSize)
     }
 
+    static func visibleFrameForTesting(
+        statusFrame: CGRect,
+        fallback: CGRect?,
+        screens: [PanelScreenFrame])
+        -> CGRect
+    {
+        Self.visibleFrame(containing: statusFrame, fallback: fallback, screens: screens)
+    }
+
     static func menuBarWidthForTesting(values: [String]) -> CGFloat {
         MenuBarMeterView.measurement(for: values).width
     }
@@ -320,6 +409,11 @@ final class StatusItemController: NSObject {
         self.isPinned = false
         self.showPopover()
     }
+}
+
+struct PanelScreenFrame {
+    let frame: CGRect
+    let visibleFrame: CGRect
 }
 
 private enum StatusPanelPositioner {
