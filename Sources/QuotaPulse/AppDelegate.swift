@@ -7,6 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var codexStore: UsageStore?
     private var claudeStore: UsageStore?
     private var scheduler: RefreshScheduler?
+    private var codexAnalyticsStore: LocalUsageAnalyticsStore?
+    private var claudeAnalyticsStore: LocalUsageAnalyticsStore?
+    private var analyticsScheduler: LocalUsageAnalyticsScheduler?
+    private var providerOrderStore: ProviderOrderStore?
     private var statusItemController: StatusItemController?
     private var notchPillController: NotchPillController?
     private var presenceMonitor: UserPresenceMonitor?
@@ -21,14 +25,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             provider: providers.claude,
             cache: UsageSnapshotCache(url: Self.claudeCacheURL()))
         let scheduler = RefreshScheduler(stores: [codexStore, claudeStore])
+        let env = ProcessInfo.processInfo.environment
+        let codexAnalyticsStore = LocalUsageAnalyticsStore(
+            providerKind: .codex,
+            provider: CodexLocalLogAnalyticsProvider(env: env))
+        let claudeAnalyticsStore = LocalUsageAnalyticsStore(
+            providerKind: .claude,
+            provider: ClaudeLocalLogAnalyticsProvider(env: env))
+        let analyticsScheduler = LocalUsageAnalyticsScheduler(stores: [codexAnalyticsStore, claudeAnalyticsStore])
+        let providerOrderStore = ProviderOrderStore()
 
         self.codexStore = codexStore
         self.claudeStore = claudeStore
         self.scheduler = scheduler
+        self.codexAnalyticsStore = codexAnalyticsStore
+        self.claudeAnalyticsStore = claudeAnalyticsStore
+        self.analyticsScheduler = analyticsScheduler
+        self.providerOrderStore = providerOrderStore
         self.statusItemController = StatusItemController(
             codexStore: codexStore,
             claudeStore: claudeStore,
-            scheduler: scheduler)
+            scheduler: scheduler,
+            codexAnalyticsStore: codexAnalyticsStore,
+            claudeAnalyticsStore: claudeAnalyticsStore,
+            analyticsScheduler: analyticsScheduler,
+            providerOrderStore: providerOrderStore)
         self.presenceMonitor = UserPresenceMonitor { [weak scheduler] state in
             scheduler?.updatePresence(state)
         }
@@ -37,7 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.notchPillController = NotchPillController(
                 codexStore: codexStore,
                 claudeStore: claudeStore,
-                scheduler: scheduler)
+                scheduler: scheduler,
+                codexAnalyticsStore: codexAnalyticsStore,
+                claudeAnalyticsStore: claudeAnalyticsStore,
+                analyticsScheduler: analyticsScheduler,
+                providerOrderStore: providerOrderStore)
             self.notchPillController?.showIfAvailable()
         }
 
@@ -53,10 +78,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         scheduler.start()
+        analyticsScheduler.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         self.scheduler?.stop()
+        self.analyticsScheduler?.stop()
         self.presenceMonitor?.stop()
         ProcessInfo.processInfo.enableAutomaticTermination(self.automaticTerminationReason)
         if let screenObserver {

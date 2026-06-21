@@ -16,8 +16,21 @@ Claude defaults:
 - `~/.claude/.credentials.json`
 - app-owned cache under the current user's Application Support folder
 - optional Claude Code Keychain discovery when `QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN=1`
+- optional Keychain prompts only when `QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT=1`
 - override with `QUOTA_PULSE_CLAUDE_CREDENTIALS_PATH`
 - override app-owned cache with `QUOTA_PULSE_CLAUDE_OAUTH_CACHE_PATH`
+
+The public standard launcher and Open at Login installer keep Claude Code Keychain discovery disabled by default. This avoids unattended macOS Keychain prompts, but Claude OAuth quota may appear cached or unavailable until the user runs the attended Keychain launcher or provides credentials explicitly.
+
+## Local Analytics Estimates
+
+QuotaPulse can scan supported local Codex and Claude log metadata read-only to produce secondary local analytics. These analytics are separate from live quota requests.
+
+For Codex, the parser supports usage metadata such as `payload.info.last_token_usage`, `payload.info.total_token_usage` as cumulative deltas only, and `payload.collaboration_mode.settings.model`.
+
+Local analytics snapshots store only aggregate fields such as timestamps, model names, token counts, estimated costs, source labels, and sanitized error messages. They do not store prompt text, response text, message bodies, cookies, Authorization headers, or raw log content.
+
+Cost values are local-log estimates and may differ from official billing, account plans, or invoices.
 
 ## What QuotaPulse Does Not Do
 
@@ -29,6 +42,7 @@ Claude defaults:
 - No telemetry or analytics SDK.
 - No credential writes.
 - No OAuth credential refresh.
+- No unattended Keychain prompts in the public launcher defaults.
 - No GitHub automation.
 - No notarization or publishing workflow.
 

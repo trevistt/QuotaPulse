@@ -14,6 +14,14 @@ Claude Code Keychain discovery is disabled unless explicitly enabled:
 QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN=1
 ```
 
+Interactive macOS Keychain prompts are separately disabled unless explicitly enabled:
+
+```text
+QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT=1
+```
+
+The public `Scripts/run_practical.sh` launcher and Open at Login installer do not enable Keychain discovery, Keychain prompts, or Claude CLI fallback by default. `Scripts/run_practical_keychain_prompt.sh` is the attended launcher for users who are present at the Mac and can approve a Keychain prompt.
+
 Claude CLI fallback is disabled by the standard launcher. The explicit fallback launcher warns before enabling it because Claude CLI may update local Claude state.
 
 ## Local Signing and Keychain Prompts
@@ -25,6 +33,10 @@ If you need fewer local Keychain prompts, package with your own local signing id
 Do not mutate Keychain access-control lists as a workaround. Do not copy or store Claude credentials to bypass Keychain prompts.
 
 Official public releases should use Apple Developer ID signing and notarization.
+
+## Local Analytics Boundaries
+
+Local analytics scanning is read-only and designed to aggregate supported usage metadata without exposing prompt or message text. Cost values are estimates from local metadata, not official billing data.
 
 ## Reporting Security Issues
 

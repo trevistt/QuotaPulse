@@ -25,7 +25,7 @@ Package a local app:
 Scripts/package_app.sh
 ```
 
-The default package is ad-hoc signed and uses app version `0.2.0`.
+The default package is ad-hoc signed and uses app version `0.3.0` build `3`.
 
 Run a smoke check against the packaged app:
 
@@ -49,7 +49,21 @@ This package currently uses the `QuotaPulseTestHarness` executable for validatio
 
 ## Harness Coverage
 
-`Scripts/test.sh` runs `swift run QuotaPulseTestHarness`. The harness covers provider parsing, redaction, OAuth request behavior, Claude OAuth credential reload, Claude rate-limit cooldown, Smart Refresh policy, per-provider refresh modes, presence pause/wake behavior, countdown text, refresh debounce, stale cached values, and menu bar formatting.
+`Scripts/test.sh` runs `swift run QuotaPulseTestHarness`. The harness covers provider parsing, redaction, OAuth request behavior, Claude OAuth credential reload, Claude rate-limit cooldown, Smart Refresh policy, independent per-provider refresh timing, presence pause/wake behavior, countdown text, refresh debounce, stale cached values, provider ordering, menu bar formatting, local analytics parsing, and no-Keychain credential discovery behavior.
+
+The visual QA fixture should also be regenerated when dashboard layout changes:
+
+```bash
+dist/QuotaPulse.app/Contents/MacOS/QuotaPulse --visual-qa-fixture /tmp/quota-pulse-public-provider-order-qa.png
+```
+
+Additional fixture variants exist for local analytics states:
+
+```bash
+dist/QuotaPulse.app/Contents/MacOS/QuotaPulse --visual-qa-fixture-codex-analytics-only /tmp/quota-pulse-codex-analytics-only.png
+dist/QuotaPulse.app/Contents/MacOS/QuotaPulse --visual-qa-fixture-claude-analytics-error /tmp/quota-pulse-claude-analytics-error.png
+dist/QuotaPulse.app/Contents/MacOS/QuotaPulse --visual-qa-fixture-no-analytics /tmp/quota-pulse-no-analytics.png
+```
 
 ## Script Checks
 
@@ -80,6 +94,12 @@ QUOTA_PULSE_REQUIRE_CODESIGN=1 Scripts/package_app.sh
 ```
 
 Do not commit local signing identity names. Official releases should use Developer ID signing and notarization.
+
+## Launcher Defaults
+
+`Scripts/run_practical.sh` and `Scripts/install_open_at_login.sh` are intentionally no-Keychain/no-prompt/no-CLI by default for public builds. This avoids unattended macOS Keychain prompts. Use `Scripts/run_practical_keychain_prompt.sh` only for attended local launches where the user can approve a Keychain prompt.
+
+Do not run `Scripts/install_open_at_login.sh` on a machine that already uses a private/runtime QuotaPulse app unless the owner explicitly wants the public repo login item installed too.
 
 ## Public-Safety Checks
 

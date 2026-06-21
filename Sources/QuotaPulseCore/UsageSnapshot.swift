@@ -4,6 +4,17 @@ public enum ProviderKind: String, Codable, Sendable, CaseIterable {
     case codex
     case claude
 
+    public static let defaultOrder: [ProviderKind] = [.codex, .claude]
+
+    public static func normalizedOrder(_ providers: [ProviderKind]) -> [ProviderKind] {
+        var output: [ProviderKind] = []
+        for provider in providers + Self.defaultOrder {
+            guard !output.contains(provider) else { continue }
+            output.append(provider)
+        }
+        return output
+    }
+
     public var displayName: String {
         switch self {
         case .codex:
@@ -287,10 +298,19 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
         var output = message
         let patterns = [
             #"Bearer\s+[A-Za-z0-9._\-]+"#,
+            #"Authorization:\s*Bearer\s+[A-Za-z0-9._\-]+"#,
+            #"Cookie:\s*[^\n\r]+"#,
             #"sk-[A-Za-z0-9_\-]+"#,
             #""access_token"\s*:\s*"[^"]+""#,
             #""refresh_token"\s*:\s*"[^"]+""#,
             #""id_token"\s*:\s*"[^"]+""#,
+            #""accessToken"\s*:\s*"[^"]+""#,
+            #""refreshToken"\s*:\s*"[^"]+""#,
+            #""idToken"\s*:\s*"[^"]+""#,
+            #""authorization"\s*:\s*"[^"]+""#,
+            #""Authorization"\s*:\s*"[^"]+""#,
+            #""cookie"\s*:\s*"[^"]+""#,
+            #""Cookie"\s*:\s*"[^"]+""#,
         ]
         for pattern in patterns {
             output = output.replacingOccurrences(
@@ -330,35 +350,76 @@ public enum UsageDisplayFormatter {
         }
     }
 
-    public static func title(codex: UsageSnapshot, claude: UsageSnapshot) -> String {
-        "\(ProviderKind.codex.displayName) \(codex.primaryDisplayText)  \(ProviderKind.claude.displayName) \(claude.primaryDisplayText)"
+    public static func title(
+        codex: UsageSnapshot,
+        claude: UsageSnapshot,
+        providerOrder: [ProviderKind] = ProviderKind.defaultOrder)
+        -> String
+    {
+        self.menuBarLines(codex: codex, claude: claude, providerOrder: providerOrder)
+            .map { "\($0.provider.displayName) \($0.value)" }
+            .joined(separator: "  ")
     }
 
-    public static func compactTitle(codex: UsageSnapshot, claude: UsageSnapshot) -> String {
-        self.menuBarCompactText(codex: codex, claude: claude)
+    public static func compactTitle(
+        codex: UsageSnapshot,
+        claude: UsageSnapshot,
+        providerOrder: [ProviderKind] = ProviderKind.defaultOrder)
+        -> String
+    {
+        self.menuBarCompactText(codex: codex, claude: claude, providerOrder: providerOrder)
     }
 
-    public static func menuBarLines(codex: UsageSnapshot, claude: UsageSnapshot, now: Date = Date()) -> [ProviderLine] {
-        [
-            ProviderLine(provider: .codex, value: Self.menuBarValue(codex, now: now)),
-            ProviderLine(provider: .claude, value: Self.menuBarValue(claude, now: now)),
+    public static func menuBarLines(
+        codex: UsageSnapshot,
+        claude: UsageSnapshot,
+        providerOrder: [ProviderKind] = ProviderKind.defaultOrder,
+        now: Date = Date())
+        -> [ProviderLine]
+    {
+        let snapshots: [ProviderKind: UsageSnapshot] = [
+            .codex: codex,
+            .claude: claude,
         ]
+        return ProviderKind.normalizedOrder(providerOrder).map { provider in
+            ProviderLine(
+                provider: provider,
+                value: Self.menuBarValue(snapshots[provider] ?? UsageSnapshot.error("Unavailable"), now: now))
+        }
     }
 
-    public static func menuBarMultilineText(codex: UsageSnapshot, claude: UsageSnapshot, now: Date = Date()) -> String {
-        self.menuBarLines(codex: codex, claude: claude, now: now)
+    public static func menuBarMultilineText(
+        codex: UsageSnapshot,
+        claude: UsageSnapshot,
+        providerOrder: [ProviderKind] = ProviderKind.defaultOrder,
+        now: Date = Date())
+        -> String
+    {
+        self.menuBarLines(codex: codex, claude: claude, providerOrder: providerOrder, now: now)
             .map(\.compactText)
             .joined(separator: "\n")
     }
 
-    public static func menuBarCompactText(codex: UsageSnapshot, claude: UsageSnapshot, now: Date = Date()) -> String {
-        self.menuBarLines(codex: codex, claude: claude, now: now)
+    public static func menuBarCompactText(
+        codex: UsageSnapshot,
+        claude: UsageSnapshot,
+        providerOrder: [ProviderKind] = ProviderKind.defaultOrder,
+        now: Date = Date())
+        -> String
+    {
+        self.menuBarLines(codex: codex, claude: claude, providerOrder: providerOrder, now: now)
             .map(\.compactText)
             .joined(separator: "  ")
     }
 
-    public static func menuBarAccessibilityText(codex: UsageSnapshot, claude: UsageSnapshot, now: Date = Date()) -> String {
-        self.menuBarLines(codex: codex, claude: claude, now: now)
+    public static func menuBarAccessibilityText(
+        codex: UsageSnapshot,
+        claude: UsageSnapshot,
+        providerOrder: [ProviderKind] = ProviderKind.defaultOrder,
+        now: Date = Date())
+        -> String
+    {
+        self.menuBarLines(codex: codex, claude: claude, providerOrder: providerOrder, now: now)
             .map(\.accessibilityText)
             .joined(separator: ", ")
     }

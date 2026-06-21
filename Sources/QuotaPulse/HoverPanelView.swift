@@ -5,7 +5,10 @@ import SwiftUI
 struct HoverPanelView: View {
     @ObservedObject var codexStore: UsageStore
     @ObservedObject var claudeStore: UsageStore
+    @ObservedObject var codexAnalyticsStore: LocalUsageAnalyticsStore
+    @ObservedObject var claudeAnalyticsStore: LocalUsageAnalyticsStore
     @ObservedObject var scheduler: RefreshScheduler
+    @ObservedObject var providerOrderStore: ProviderOrderStore
     let isPinned: Bool
     let maxPanelHeight: CGFloat
     let onRefresh: () -> Void
@@ -16,6 +19,7 @@ struct HoverPanelView: View {
     @State private var selectedTab: DashboardTab = .overview
     @State private var measuredTabBarHeight = DashboardLayout.defaultTabBarHeight
     @State private var measuredBodyHeight = DashboardLayout.defaultBodyHeight
+    @State private var measuredControlsHeight = DashboardLayout.defaultControlsHeight
     @State private var countdownNow = Date()
 
     static var preferredContentSize: CGSize {
@@ -25,9 +29,13 @@ struct HoverPanelView: View {
     init(
         codexStore: UsageStore,
         claudeStore: UsageStore,
+        codexAnalyticsStore: LocalUsageAnalyticsStore,
+        claudeAnalyticsStore: LocalUsageAnalyticsStore,
         scheduler: RefreshScheduler,
+        providerOrderStore: ProviderOrderStore,
         isPinned: Bool,
         maxPanelHeight: CGFloat = DashboardLayout.defaultMaxPanelHeight,
+        initialTab: DashboardTab = .overview,
         onRefresh: @escaping () -> Void,
         onTogglePin: @escaping () -> Void,
         onQuit: @escaping () -> Void,
@@ -35,20 +43,24 @@ struct HoverPanelView: View {
     {
         self.codexStore = codexStore
         self.claudeStore = claudeStore
+        self.codexAnalyticsStore = codexAnalyticsStore
+        self.claudeAnalyticsStore = claudeAnalyticsStore
         self.scheduler = scheduler
+        self.providerOrderStore = providerOrderStore
         self.isPinned = isPinned
         self.maxPanelHeight = maxPanelHeight
         self.onRefresh = onRefresh
         self.onTogglePin = onTogglePin
         self.onQuit = onQuit
         self.onPreferredSizeChange = onPreferredSizeChange
+        self._selectedTab = State(initialValue: initialTab)
     }
 
     static func preferredContentSize(maxHeight: CGFloat) -> CGSize {
         CGSize(
             width: DashboardLayout.panelWidth,
             height: DashboardLayout.panelHeight(
-                bodyHeight: DashboardLayout.defaultBodyHeight,
+                bodyHeight: DashboardLayout.defaultBodyHeight + DashboardLayout.defaultControlsHeight + 1,
                 tabBarHeight: DashboardLayout.defaultTabBarHeight,
                 maxHeight: maxHeight))
     }
@@ -96,11 +108,16 @@ struct HoverPanelView: View {
             ScrollView(showsIndicators: self.contentRequiresScroll) {
                 VStack(alignment: .leading, spacing: 10) {
                     self.content
-                    self.controls
                 }
                 .padding(12)
                 .readHeight(PanelBodyHeightPreferenceKey.self)
             }
+            Divider().overlay(Color.white.opacity(0.10))
+            self.controls
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
+                .readHeight(PanelControlsHeightPreferenceKey.self)
         }
         .frame(width: DashboardLayout.panelWidth, height: self.panelHeight)
         .background(
@@ -127,18 +144,21 @@ struct HoverPanelView: View {
         .onPreferenceChange(PanelBodyHeightPreferenceKey.self) { height in
             self.updateMeasuredHeight(&self.measuredBodyHeight, height)
         }
+        .onPreferenceChange(PanelControlsHeightPreferenceKey.self) { height in
+            self.updateMeasuredHeight(&self.measuredControlsHeight, height)
+        }
     }
 
     private var panelHeight: CGFloat {
         DashboardLayout.panelHeight(
-            bodyHeight: self.measuredBodyHeight,
+            bodyHeight: self.measuredBodyHeight + self.measuredControlsHeight + 1,
             tabBarHeight: self.measuredTabBarHeight,
             maxHeight: self.maxPanelHeight)
     }
 
     private var contentRequiresScroll: Bool {
         DashboardLayout.naturalPanelHeight(
-            bodyHeight: self.measuredBodyHeight,
+            bodyHeight: self.measuredBodyHeight + self.measuredControlsHeight + 1,
             tabBarHeight: self.measuredTabBarHeight) > self.panelHeight + 1
     }
 
@@ -155,18 +175,31 @@ struct HoverPanelView: View {
     private var content: some View {
         switch self.selectedTab {
         case .overview:
-            providerSection(provider: .codex, snapshot: self.codexStore.snapshot, showExtraWindows: false)
-            providerSection(provider: .claude, snapshot: self.claudeStore.snapshot, showExtraWindows: false)
+            self.attentionRow
+            ForEach(self.orderedProviders, id: \.self) { provider in
+                providerOverviewSection(
+                    provider: provider,
+                    snapshot: self.snapshot(for: provider),
+                    analytics: self.analyticsSnapshot(for: provider))
+            }
         case .codex:
-            providerSection(provider: .codex, snapshot: self.codexStore.snapshot, showExtraWindows: true)
+            providerSection(
+                provider: .codex,
+                snapshot: self.codexStore.snapshot,
+                analytics: self.codexAnalyticsStore.snapshot,
+                showExtraWindows: true)
         case .claude:
-            providerSection(provider: .claude, snapshot: self.claudeStore.snapshot, showExtraWindows: true)
+            providerSection(
+                provider: .claude,
+                snapshot: self.claudeStore.snapshot,
+                analytics: self.claudeAnalyticsStore.snapshot,
+                showExtraWindows: true)
         }
     }
 
     private var tabBar: some View {
         HStack(spacing: 6) {
-            ForEach(DashboardTab.allCases) { tab in
+            ForEach(DashboardTab.orderedTabs(providerOrder: self.orderedProviders)) { tab in
                 Button {
                     self.selectedTab = tab
                 } label: {
@@ -209,9 +242,108 @@ struct HoverPanelView: View {
         }
     }
 
+    private var attentionRow: some View {
+        let snapshots = self.orderedProviders.map { ($0, self.snapshot(for: $0)) }
+        let risks = snapshots.compactMap { provider, snapshot -> (ProviderKind, Double, String)? in
+            guard let percent = snapshot.sessionPercentRemaining else { return nil }
+            let reset = snapshot.sessionResetAt.map { "Reset \(UsageSnapshot.countdown(to: $0, now: self.countdownNow))" } ?? "Reset unknown"
+            return (provider, percent, reset)
+        }
+        let riskiest = risks.min { lhs, rhs in lhs.1 < rhs.1 }
+        return HStack(spacing: 8) {
+            Image(systemName: "target")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.orange.opacity(0.95))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Usage cockpit")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.78))
+                if let riskiest {
+                    Text("\(riskiest.0.displayName) closest to empty: \(Int(riskiest.1.rounded()))% remaining · \(riskiest.2)")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.56))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                } else {
+                    Text("Quota, extra windows, and estimated local log analytics.")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.56))
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.045))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 0.75)))
+    }
+
+    private func providerOverviewSection(
+        provider: ProviderKind,
+        snapshot: UsageSnapshot,
+        analytics: LocalUsageAnalyticsSnapshot) -> some View
+    {
+        let accent = Self.accent(for: provider)
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top, spacing: 8) {
+                providerMark(provider, accent: accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Text(provider.displayName)
+                            .font(.system(size: 13, weight: .bold))
+                        sourceBadge(snapshot)
+                    }
+                    Text(Self.updatedText(snapshot.updatedAt))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.48))
+                }
+                Spacer(minLength: 8)
+                Text(snapshot.primaryDisplayText)
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(snapshot.errorMessage == nil ? .white : Color.red.opacity(0.92))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+
+            progressRow(
+                label: "Session",
+                window: snapshot.sessionWindow(),
+                remainingPercent: snapshot.sessionPercentRemaining,
+                accent: accent)
+            progressRow(
+                label: "Weekly",
+                window: snapshot.weeklyWindow(),
+                remainingPercent: snapshot.weeklyPercentRemaining,
+                accent: accent.opacity(0.72))
+
+            if !snapshot.extraWindows.isEmpty {
+                extraWindowsCompactList(provider: provider, windows: snapshot.extraWindows, accent: accent)
+            }
+
+            if snapshot.isStale || snapshot.errorMessage != nil {
+                compactStateMessage(provider: provider, snapshot: snapshot)
+            }
+
+            analyticsSummarySection(provider: provider, snapshot: analytics, accent: accent, compact: true)
+        }
+        .padding(9)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.white.opacity(0.055))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(accent.opacity(0.24), lineWidth: 0.75)))
+    }
+
     private func providerSection(
         provider: ProviderKind,
         snapshot: UsageSnapshot,
+        analytics: LocalUsageAnalyticsSnapshot,
         showExtraWindows: Bool) -> some View
     {
         let accent = Self.accent(for: provider)
@@ -268,6 +400,8 @@ struct HoverPanelView: View {
             if snapshot.isStale || snapshot.errorMessage != nil {
                 stateMessage(provider: provider, snapshot: snapshot)
             }
+
+            analyticsSummarySection(provider: provider, snapshot: analytics, accent: accent, compact: false)
         }
         .padding(11)
         .background(
@@ -276,6 +410,162 @@ struct HoverPanelView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
                         .stroke(accent.opacity(0.24), lineWidth: 0.75)))
+    }
+
+    private func extraWindowsCompactList(
+        provider: ProviderKind,
+        windows: [UsageNamedWindow],
+        accent: Color)
+        -> some View
+    {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Extra windows")
+                .font(.system(size: 9.5, weight: .bold))
+                .foregroundStyle(.white.opacity(0.48))
+            ForEach(windows.prefix(4)) { extraWindow in
+                HStack(spacing: 7) {
+                    ProviderBrandIconView(
+                        provider: provider,
+                        size: 8.5,
+                        fallbackSystemImage: ProviderBrandIcon.fallbackSystemImage(for: provider))
+                        .foregroundStyle(accent)
+                        .frame(width: 10)
+                    Text(extraWindow.title)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.68))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(Self.percentText(extraWindow.window.remainingPercent))
+                        .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.82))
+                    if let resetAt = extraWindow.window.resetAt {
+                        Text(UsageSnapshot.countdown(to: resetAt, now: self.countdownNow))
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.46))
+                    }
+                }
+                ProgressBar(
+                    fraction: UsageDisplayFormatter.progressFraction(forRemainingPercent: extraWindow.window.remainingPercent),
+                    targetFraction: nil,
+                    accent: accent.opacity(0.50))
+                    .frame(height: 4)
+            }
+            if windows.count > 4 {
+                Text("+\(windows.count - 4) more in provider tab")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.46))
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private func analyticsSummarySection(
+        provider: ProviderKind,
+        snapshot: LocalUsageAnalyticsSnapshot,
+        accent: Color,
+        compact: Bool)
+        -> some View
+    {
+        VStack(alignment: .leading, spacing: compact ? 6 : 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "chart.bar.xaxis")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(accent)
+                Text("Local analytics")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.74))
+                Text(LocalUsageAnalyticsFormatter.sourceText(snapshot))
+                    .font(.system(size: 8.5, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(snapshot.isStale ? Color.orange.opacity(0.20) : Color.white.opacity(0.08)))
+                    .foregroundStyle(snapshot.isStale ? Color.orange.opacity(0.92) : .white.opacity(0.58))
+                Spacer(minLength: 0)
+            }
+
+            if snapshot.hasAnyData {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 6),
+                        GridItem(.flexible(), spacing: 6),
+                        GridItem(.flexible(), spacing: 6),
+                    ],
+                    alignment: .leading,
+                    spacing: 6)
+                {
+                    analyticsMetric(title: "Today", value: LocalUsageAnalyticsFormatter.costText(snapshot.todayCostUSD))
+                    analyticsMetric(title: "30d", value: LocalUsageAnalyticsFormatter.costText(snapshot.last30DaysCostUSD))
+                    analyticsMetric(title: "Tokens", value: LocalUsageAnalyticsFormatter.tokenText(snapshot.todayTokens))
+                    analyticsMetric(title: "30d tokens", value: LocalUsageAnalyticsFormatter.tokenText(snapshot.last30DaysTokens))
+                    analyticsMetric(title: "Latest", value: LocalUsageAnalyticsFormatter.tokenText(snapshot.latestTokens))
+                    analyticsMetric(title: "Top model", value: snapshot.topModel ?? "unknown")
+                }
+                analyticsHistogram(snapshot: snapshot, accent: accent)
+                Text(snapshot.estimateNote)
+                    .font(.system(size: compact ? 8.4 : 9, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.42))
+                    .lineLimit(compact ? 1 : 2)
+                    .minimumScaleFactor(0.78)
+            } else {
+                Text(snapshot.errorMessage ?? "No local analytics data found.")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.56))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let message = snapshot.errorMessage, snapshot.hasAnyData {
+                Text(message)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(snapshot.isStale ? Color.orange.opacity(0.9) : Color.red.opacity(0.9))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.040))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.white.opacity(0.075), lineWidth: 0.75)))
+        .accessibilityLabel("\(provider.displayName) local analytics, estimated from local logs")
+    }
+
+    private func analyticsMetric(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+                .font(.system(size: 8.5, weight: .medium))
+                .foregroundStyle(.white.opacity(0.42))
+                .lineLimit(1)
+            Text(value)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.white.opacity(0.82))
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func analyticsHistogram(snapshot: LocalUsageAnalyticsSnapshot, accent: Color) -> some View {
+        let buckets = snapshot.dailyHistory.suffix(14)
+        let maxTokens = max(1, buckets.map(\.totalTokens).max() ?? 1)
+        return HStack(alignment: .bottom, spacing: 2) {
+            ForEach(Array(buckets.enumerated()), id: \.offset) { _, bucket in
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(bucket.totalTokens > 0 ? accent.opacity(0.74) : Color.white.opacity(0.08))
+                    .frame(
+                        width: 6,
+                        height: max(3, CGFloat(bucket.totalTokens) / CGFloat(maxTokens) * 28))
+                    .accessibilityLabel("\(bucket.date) \(bucket.totalTokens) tokens")
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(height: 30, alignment: .bottomLeading)
     }
 
     private func providerMark(_ provider: ProviderKind, accent: Color) -> some View {
@@ -289,6 +579,41 @@ struct HoverPanelView: View {
         }
         .foregroundStyle(accent)
         .frame(width: 24, height: 24)
+    }
+
+    private func compactProgressRow(
+        label: String,
+        window: UsageWindow?,
+        remainingPercent: Double?,
+        accent: Color)
+        -> some View
+    {
+        let pace = window.flatMap { UsagePace(window: $0) }
+        let targetFraction = pace.map { $0.targetRemainingPercent / 100 }
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(label)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.60))
+                Spacer()
+                if let pace {
+                    Text(UsagePaceFormatter.balanceText(pace))
+                        .font(.system(size: 9.2, weight: .semibold))
+                        .foregroundStyle(Self.paceColor(pace))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                }
+                Text(Self.percentText(remainingPercent))
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.86))
+            }
+            ProgressBar(
+                fraction: UsageDisplayFormatter.progressFraction(forRemainingPercent: remainingPercent),
+                targetFraction: targetFraction,
+                accent: accent)
+                .frame(height: 5)
+        }
     }
 
     private func progressRow(
@@ -378,6 +703,37 @@ struct HoverPanelView: View {
                     .fill(Color.white.opacity(0.06)))
     }
 
+    private func compactStateMessage(provider: ProviderKind, snapshot: UsageSnapshot) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: snapshot.hasRateLimitError ? "clock" : "exclamationmark.triangle")
+                .font(.system(size: 8.5, weight: .semibold))
+            Text(Self.compactStateMessageText(provider: provider, snapshot: snapshot))
+                .font(.system(size: 9.5, weight: .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .foregroundStyle(snapshot.errorMessage == nil ? Color.orange.opacity(0.92) : Color.red.opacity(0.9))
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.white.opacity(0.055)))
+    }
+
+    private static func compactStateMessageText(provider: ProviderKind, snapshot: UsageSnapshot) -> String {
+        if snapshot.hasRateLimitError {
+            return "Cached value; wait for cooldown."
+        }
+        if provider == .claude, snapshot.hasStaleAuthFailure {
+            return "Login expired; open Claude Code."
+        }
+        if snapshot.isStale {
+            return "! means cached value."
+        }
+        return snapshot.errorMessage ?? "Usage unavailable."
+    }
+
     private static func stateMessageText(provider: ProviderKind, snapshot: UsageSnapshot) -> String {
         if provider == .claude, snapshot.hasStaleAuthFailure {
             return UsageSnapshot.claudeLoginExpiredMessage
@@ -421,7 +777,7 @@ struct HoverPanelView: View {
             .font(.system(size: 11, weight: .semibold))
 
             HStack(spacing: 6) {
-                Text(self.scheduler.summaryText(now: self.countdownNow))
+                Text(self.schedulerSummaryText(now: self.countdownNow))
                     .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(.white.opacity(0.58))
                     .lineLimit(2)
@@ -429,10 +785,66 @@ struct HoverPanelView: View {
                 Spacer(minLength: 0)
             }
 
-            self.smartRefreshRow(provider: .codex)
-            self.smartRefreshRow(provider: .claude)
+            self.providerOrderControls
+            ForEach(self.orderedProviders, id: \.self) { provider in
+                self.smartRefreshRow(provider: provider)
+            }
         }
         .padding(.top, 2)
+    }
+
+    private var providerOrderControls: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.52))
+                .frame(width: 12)
+            Text("Order")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.64))
+                .frame(width: 38, alignment: .leading)
+            ForEach(Array(self.orderedProviders.enumerated()), id: \.element) { index, provider in
+                self.providerOrderChip(provider: provider, index: index)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(height: 24)
+    }
+
+    private func providerOrderChip(provider: ProviderKind, index: Int) -> some View {
+        HStack(spacing: 3) {
+            ProviderBrandIconView(
+                provider: provider,
+                size: 8.5,
+                fallbackSystemImage: ProviderBrandIcon.fallbackSystemImage(for: provider))
+                .foregroundStyle(Self.accent(for: provider))
+                .frame(width: 10)
+            Text(provider.compactName)
+                .font(.system(size: 9.5, weight: .bold))
+                .foregroundStyle(.white.opacity(0.78))
+            Button {
+                self.providerOrderStore.move(provider, direction: .up)
+            } label: {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .disabled(index == 0)
+            .accessibilityLabel("Move \(provider.displayName) earlier")
+            Button {
+                self.providerOrderStore.move(provider, direction: .down)
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .disabled(index >= self.orderedProviders.count - 1)
+            .accessibilityLabel("Move \(provider.displayName) later")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(0.075)))
     }
 
     private func smartRefreshRow(provider: ProviderKind) -> some View {
@@ -482,6 +894,37 @@ struct HoverPanelView: View {
         .frame(height: 22)
     }
 
+    private func schedulerSummaryText(now: Date) -> String {
+        if let paused = self.scheduler.presence.pausedText {
+            return paused
+        }
+        return self.orderedProviders.map { provider in
+            "\(provider.displayName) \(Self.providerStatusText(provider: provider, state: self.scheduler.state(for: provider), now: now))"
+        }.joined(separator: " · ")
+    }
+
+    private var orderedProviders: [ProviderKind] {
+        ProviderKind.normalizedOrder(self.providerOrderStore.providers)
+    }
+
+    private func snapshot(for provider: ProviderKind) -> UsageSnapshot {
+        switch provider {
+        case .codex:
+            self.codexStore.snapshot
+        case .claude:
+            self.claudeStore.snapshot
+        }
+    }
+
+    private func analyticsSnapshot(for provider: ProviderKind) -> LocalUsageAnalyticsSnapshot {
+        switch provider {
+        case .codex:
+            self.codexAnalyticsStore.snapshot
+        case .claude:
+            self.claudeAnalyticsStore.snapshot
+        }
+    }
+
     private static func providerStatusText(
         provider: ProviderKind,
         state: ProviderRefreshState,
@@ -496,17 +939,18 @@ struct HoverPanelView: View {
            let cooldown = state.cooldownUntil,
            cooldown > now
         {
-            return "Cooldown \(RefreshScheduler.refreshCountdown(to: cooldown, now: now))"
+            return "Cooldown until \(Self.timeText(cooldown)) · \(RefreshScheduler.refreshCountdown(to: cooldown, now: now))"
         }
         if state.mode == .manual { return "Manual" }
         if let next = state.nextRefreshAt {
-            return "Next \(RefreshScheduler.refreshCountdown(to: next, now: now))"
+            return "Next \(Self.timeText(next)) · \(RefreshScheduler.refreshCountdown(to: next, now: now))"
         }
         return state.lastStatusText
     }
 
     private var isRefreshing: Bool {
-        self.codexStore.isRefreshing || self.claudeStore.isRefreshing
+        self.codexStore.isRefreshing
+            || self.claudeStore.isRefreshing
     }
 
     private static func accent(for provider: ProviderKind) -> Color {
@@ -556,9 +1000,11 @@ struct HoverPanelView: View {
 private enum DashboardLayout {
     static let panelWidth: CGFloat = 370
     static let defaultTabBarHeight: CGFloat = 45
-    static let defaultBodyHeight: CGFloat = 392
-    static let minPanelHeight: CGFloat = 360
-    static let maxPanelHeightCap: CGFloat = 560
+    static let defaultBodyHeight: CGFloat = 620
+    static let defaultControlsHeight: CGFloat = 132
+    static let minPanelHeight: CGFloat = 680
+    static let stablePanelHeight: CGFloat = 840
+    static let maxPanelHeightCap: CGFloat = 840
     static let screenMargin: CGFloat = 8
 
     static var defaultMaxPanelHeight: CGFloat {
@@ -578,7 +1024,9 @@ private enum DashboardLayout {
     static func panelHeight(bodyHeight: CGFloat, tabBarHeight: CGFloat, maxHeight: CGFloat) -> CGFloat {
         let maxHeight = max(1, maxHeight)
         let minHeight = min(self.minPanelHeight, maxHeight)
-        return min(max(self.naturalPanelHeight(bodyHeight: bodyHeight, tabBarHeight: tabBarHeight), minHeight), maxHeight)
+        let stableHeight = min(self.stablePanelHeight, maxHeight)
+        let naturalHeight = min(self.naturalPanelHeight(bodyHeight: bodyHeight, tabBarHeight: tabBarHeight), maxHeight)
+        return max(minHeight, max(stableHeight, naturalHeight))
     }
 }
 
@@ -592,6 +1040,13 @@ private struct PanelTabBarHeightPreferenceKey: PanelHeightPreferenceKey {
 }
 
 private struct PanelBodyHeightPreferenceKey: PanelHeightPreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct PanelControlsHeightPreferenceKey: PanelHeightPreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
@@ -635,12 +1090,23 @@ private struct ProgressBar: View {
     }
 }
 
-private enum DashboardTab: String, CaseIterable, Identifiable {
+enum DashboardTab: String, CaseIterable, Identifiable {
     case overview
     case codex
     case claude
 
     var id: String { self.rawValue }
+
+    static func orderedTabs(providerOrder: [ProviderKind]) -> [DashboardTab] {
+        [.overview] + ProviderKind.normalizedOrder(providerOrder).map { provider in
+            switch provider {
+            case .codex:
+                .codex
+            case .claude:
+                .claude
+            }
+        }
+    }
 
     var label: String {
         switch self {

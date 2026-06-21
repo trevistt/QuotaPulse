@@ -58,6 +58,10 @@ private final class Harness {
         await self.run("CLI RPC timeout", self.cliRPCTimeout)
         await self.run("Local fallback usage file", self.localFallbackUsageFile)
         await self.run("Local fallback session scan", self.localFallbackSessionScan)
+        await self.run("Local analytics model codable and formatting", self.localAnalyticsModelCodableAndFormatting)
+        await self.run("Codex local log analytics scanner", self.codexLocalLogAnalyticsScanner)
+        await self.run("Claude local log analytics scanner", self.claudeLocalLogAnalyticsScanner)
+        await self.run("Local analytics store and scheduler", self.localAnalyticsStoreAndScheduler)
         await self.run("Refresh cadence and backoff", self.refreshCadenceAndBackoff)
         await self.run("Refresh gate no-overlap", self.refreshGateNoOverlap)
         await self.run("Refresh jitter bounds", self.refreshJitterBounds)
@@ -73,6 +77,7 @@ private final class Harness {
         await self.run("Codex refresh while Claude rate-limited", self.codexRefreshWhileClaudeRateLimited)
         await self.run("Dual-provider independent failure", self.dualProviderIndependentFailure)
         await self.run("Dual-provider title formatter", self.dualProviderTitleFormatter)
+        await self.run("Provider order store and formatter", self.providerOrderStoreAndFormatter)
     }
 
     private func run(_ name: String, _ body: () async throws -> Void) async {
@@ -232,9 +237,15 @@ private final class Harness {
     }
 
     private func secretSanitization() async throws {
-        let snapshot = UsageSnapshot.error("Bearer abc.def sk-test123 \"access_token\":\"secret\"")
+        let snapshot = UsageSnapshot.error("""
+        Authorization: Bearer abc.def
+        Cookie: session=very-secret-cookie
+        sk-test123
+        {"access_token":"secret","refreshToken":"refresh-secret","idToken":"id-secret","cookie":"json-cookie"}
+        """)
         try self.expect(snapshot.primaryDisplayText == "ERR", "error display should be ERR")
         try self.expect(snapshot.errorMessage?.contains("abc.def") == false, "bearer token redacted")
+        try self.expect(snapshot.errorMessage?.contains("very-secret-cookie") == false, "cookie redacted")
         try self.expect(snapshot.errorMessage?.contains("sk-test123") == false, "api key redacted")
         try self.expect(snapshot.errorMessage?.contains("secret") == false, "access token redacted")
     }
@@ -421,6 +432,31 @@ private final class Harness {
             keychainReader: StubClaudeKeychainReader(data: Data(Self.claudeCredentialsJSON(accessToken: "keychain-access").utf8)))
         try self.expect(keychainRecord.source == .claudeCodeKeychain, "opt-in Keychain is third priority")
         try self.expect(keychainRecord.credentials.accessToken == "keychain-access", "Keychain token selected")
+
+        let noPromptRecorder = KeychainPromptRecorder()
+        _ = try ClaudeOAuthCredentialsStore.loadRecord(
+            env: [
+                "HOME": temp.path,
+                "QUOTA_PULSE_CLAUDE_OAUTH_CACHE_PATH": temp.appendingPathComponent("missing-cache.json").path,
+                "QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN": "1",
+            ],
+            keychainReader: StubClaudeKeychainReader(
+                data: Data(Self.claudeCredentialsJSON(accessToken: "keychain-access").utf8),
+                promptRecorder: noPromptRecorder))
+        try self.expect(noPromptRecorder.values == [false], "Keychain discovery defaults to no-prompt mode")
+
+        let promptAllowedRecorder = KeychainPromptRecorder()
+        _ = try ClaudeOAuthCredentialsStore.loadRecord(
+            env: [
+                "HOME": temp.path,
+                "QUOTA_PULSE_CLAUDE_OAUTH_CACHE_PATH": temp.appendingPathComponent("missing-cache.json").path,
+                "QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN": "1",
+                "QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT": "1",
+            ],
+            keychainReader: StubClaudeKeychainReader(
+                data: Data(Self.claudeCredentialsJSON(accessToken: "keychain-access").utf8),
+                promptRecorder: promptAllowedRecorder))
+        try self.expect(promptAllowedRecorder.values == [true], "explicit env allows Keychain prompt")
     }
 
     private func claudeOAuthKeychainFailClosedDiscovery() async throws {
@@ -927,6 +963,153 @@ private final class Harness {
         try self.expect(snapshot.weeklyPercentRemaining == 32, "session log weekly remaining")
     }
 
+    private func localAnalyticsModelCodableAndFormatting() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = LocalUsageAnalyticsSnapshot(
+            provider: .codex,
+            todayCostUSD: 0.004,
+            todayTokens: 1_234,
+            last30DaysCostUSD: 12.345,
+            last30DaysTokens: 56_789,
+            latestTokens: 987,
+            topModel: "gpt-5.4-codex",
+            dailyHistory: [
+                LocalUsageDailyBucket(date: "2027-01-15", totalTokens: 1_234, costUSD: 0.004, requestCount: 2),
+            ],
+            updatedAt: now,
+            sourceLabel: "Local logs fixture")
+        let data = try JSONEncoder().encode(snapshot)
+        let decoded = try JSONDecoder().decode(LocalUsageAnalyticsSnapshot.self, from: data)
+        try self.expect(decoded == snapshot, "local analytics snapshot codable round-trips")
+        try self.expect(LocalUsageAnalyticsFormatter.costText(0.004) == "<$0.01", "small cost is formatted")
+        try self.expect(LocalUsageAnalyticsFormatter.costText(12.345) == "$12.35", "cost rounds to cents")
+        try self.expect(LocalUsageAnalyticsFormatter.tokenText(56_789) == "56,789", "tokens are grouped")
+        try self.expect(LocalUsageAnalyticsFormatter.sourceText(snapshot) == "Local logs fixture", "healthy analytics source text")
+        try self.expect(LocalUsageAnalyticsFormatter.sourceText(snapshot.markedStale(errorMessage: "failed")) == "Local logs fixture, stale", "stale analytics source text")
+    }
+
+    private func codexLocalLogAnalyticsScanner() async throws {
+        let root = try Self.makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = root.appendingPathComponent("sessions/2027/01/15", isDirectory: true)
+        let archived = root.appendingPathComponent("archived_sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: archived, withIntermediateDirectories: true)
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let today = Self.iso(now.addingTimeInterval(-600))
+        let codexRolloutTime = Self.iso(now.addingTimeInterval(-1_200))
+        let yesterday = Self.iso(now.addingTimeInterval(-86_400))
+        try Data("""
+        {"timestamp":"\(codexRolloutTime)","type":"turn_context","payload":{"collaboration_mode":{"settings":{"model":"gpt-5.5"}}}}
+        {"timestamp":"\(codexRolloutTime)","type":"response_item","payload":{"info":{"last_token_usage":{"input_tokens":400,"cached_input_tokens":100,"output_tokens":50,"reasoning_output_tokens":25,"total_tokens":575}},"item":{"content":[{"type":"output_text","text":"PRIVATE_CODEX_ROLLOUT_TEXT_SHOULD_NOT_LEAK"}]}}}
+        {"timestamp":"\(today)","payload":{"type":"token_count","info":{"model":"gpt-5.4-codex"},"usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":300},"prompt":"PRIVATE_CODEX_PROMPT_SHOULD_NOT_LEAK"}}
+        {not-json}
+        {"timestamp":"\(yesterday)","payload":{"type":"token_count","info":{"model":"unknown-codex-local"},"usage":{"input_tokens":200,"output_tokens":100},"message":"PRIVATE_CODEX_MESSAGE_SHOULD_NOT_LEAK"}}
+        """.utf8).write(to: sessions.appendingPathComponent("session.jsonl"))
+        try Data("""
+        {"timestamp":"\(Self.iso(now.addingTimeInterval(-9 * 86_400)))","payload":{"type":"token_count","info":{"model":"gpt-5-mini"},"usage":{"input_tokens":20,"output_tokens":30}}}
+        {"timestamp":"\(Self.iso(now.addingTimeInterval(-9 * 86_400 + 60)))","type":"turn_context","payload":{"collaboration_mode":{"settings":{"model":"gpt-5-mini"}}}}
+        {"timestamp":"\(Self.iso(now.addingTimeInterval(-9 * 86_400 + 120)))","type":"event_msg","payload":{"info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":10,"output_tokens":30,"total_tokens":60}}}}
+        {"timestamp":"\(Self.iso(now.addingTimeInterval(-9 * 86_400 + 180)))","type":"event_msg","payload":{"info":{"total_token_usage":{"input_tokens":50,"cached_input_tokens":20,"output_tokens":40,"total_tokens":110}}}}
+        """.utf8).write(to: archived.appendingPathComponent("archived.jsonl"))
+
+        let snapshot = try LocalUsageLogScanner.scanCodex(
+            roots: [root.appendingPathComponent("sessions"), archived],
+            now: now)
+        try self.expect(snapshot.provider == .codex, "Codex analytics provider kind")
+        try self.expect(snapshot.todayTokens == 2_075, "Codex today tokens include rollout last_token_usage metadata")
+        try self.expect(snapshot.last30DaysTokens == 2_475, "Codex 30d tokens include archived metadata, rollout schema, and cumulative total deltas without first-total overcount")
+        try self.expect(snapshot.latestTokens == 1_500, "Codex latest tokens use latest metadata row")
+        try self.expect(snapshot.topModel == "gpt-5.4-codex", "Codex top model is selected by token volume")
+        try self.expect(snapshot.todayCostUSD != nil, "Codex known pricing estimates today cost")
+        try self.expect(snapshot.isCostPartial, "Codex unknown model marks cost partial")
+        try self.expect(snapshot.dailyHistory.count == 30, "Codex histogram has 30 day buckets")
+        let encoded = String(data: try JSONEncoder().encode(snapshot), encoding: .utf8) ?? ""
+        try self.expect(!encoded.contains("PRIVATE_CODEX_PROMPT_SHOULD_NOT_LEAK"), "Codex analytics snapshot excludes prompt text")
+        try self.expect(!encoded.contains("PRIVATE_CODEX_MESSAGE_SHOULD_NOT_LEAK"), "Codex analytics snapshot excludes message text")
+        try self.expect(!encoded.contains("PRIVATE_CODEX_ROLLOUT_TEXT_SHOULD_NOT_LEAK"), "Codex rollout analytics excludes response text")
+
+        let providerRoots = CodexLocalLogAnalyticsProvider.codexRoots(
+            env: ["CODEX_HOME": root.path],
+            codexHome: nil)
+        try self.expect(providerRoots.contains(root.appendingPathComponent("sessions", isDirectory: true)), "Codex scanner respects CODEX_HOME sessions")
+        try self.expect(providerRoots.contains(root.appendingPathComponent("archived_sessions", isDirectory: true)), "Codex scanner respects CODEX_HOME archived sessions")
+    }
+
+    private func claudeLocalLogAnalyticsScanner() async throws {
+        let config = try Self.makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: config) }
+        let projects = config.appendingPathComponent("projects/private-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let today = Self.iso(now.addingTimeInterval(-300))
+        let yesterday = Self.iso(now.addingTimeInterval(-86_400))
+        try Data("""
+        {"type":"assistant","timestamp":"\(today)","requestId":"req-1","message":{"id":"msg-1","model":"claude-sonnet-4.5","usage":{"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":10,"output_tokens":30},"content":[{"type":"text","text":"PRIVATE_CLAUDE_MESSAGE_SHOULD_NOT_LEAK"}]}}
+        {"type":"assistant","timestamp":"\(today)","requestId":"req-1","message":{"id":"msg-1","model":"claude-sonnet-4.5","usage":{"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":10,"output_tokens":40},"content":[{"type":"text","text":"PRIVATE_CLAUDE_UPDATED_MESSAGE_SHOULD_NOT_LEAK"}]}}
+        {"type":"assistant","timestamp":"\(yesterday)","requestId":"req-2","message":{"id":"msg-2","model":"mystery-local-model","usage":{"input_tokens":10,"output_tokens":20}}}
+        {malformed-json}
+        """.utf8).write(to: projects.appendingPathComponent("session.jsonl"))
+
+        let roots = ClaudeLocalLogAnalyticsProvider.claudeProjectsRoots(
+            env: ["CLAUDE_CONFIG_DIR": config.path])
+        try self.expect(roots == [config.appendingPathComponent("projects", isDirectory: true)], "Claude scanner respects CLAUDE_CONFIG_DIR")
+
+        let snapshot = try LocalUsageLogScanner.scanClaude(roots: roots, now: now)
+        try self.expect(snapshot.provider == .claude, "Claude analytics provider kind")
+        try self.expect(snapshot.todayTokens == 170, "Claude duplicate streaming rows keep final cumulative usage")
+        try self.expect(snapshot.last30DaysTokens == 200, "Claude 30d tokens include unknown model row")
+        try self.expect(snapshot.latestTokens == 170, "Claude latest tokens use latest metadata row")
+        try self.expect(snapshot.topModel == "claude-sonnet-4.5", "Claude top model is selected by token volume")
+        try self.expect(snapshot.todayCostUSD != nil, "Claude known pricing estimates today cost")
+        try self.expect(snapshot.isCostPartial, "Claude unknown model marks cost partial")
+        try self.expect(snapshot.dailyHistory.count == 30, "Claude histogram has 30 day buckets")
+        let encoded = String(data: try JSONEncoder().encode(snapshot), encoding: .utf8) ?? ""
+        try self.expect(!encoded.contains("PRIVATE_CLAUDE_MESSAGE_SHOULD_NOT_LEAK"), "Claude analytics snapshot excludes message text")
+        try self.expect(!encoded.contains("PRIVATE_CLAUDE_UPDATED_MESSAGE_SHOULD_NOT_LEAK"), "Claude analytics snapshot excludes updated message text")
+    }
+
+    private func localAnalyticsStoreAndScheduler() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let provider = DelayedCountingLocalAnalyticsProvider(providerKind: .codex, now: now, delayNanoseconds: 60_000_000)
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("quota-pulse-local-analytics-\(UUID().uuidString).json")
+        let store = LocalUsageAnalyticsStore(
+            providerKind: .codex,
+            provider: provider,
+            cacheURL: cacheURL)
+
+        let first = Task { @MainActor in await store.refresh() }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        try self.expect(store.isRefreshing, "local analytics store enters refreshing state")
+        let second = await store.refresh()
+        try self.expect(!second, "local analytics repeated refresh is ignored while running")
+        let firstResult = await first.value
+        try self.expect(firstResult, "local analytics first refresh completes")
+        try self.expect(!store.isRefreshing, "local analytics store exits refreshing state")
+        try self.expect(store.snapshot.todayTokens == 1_001, "local analytics store stores provider snapshot")
+        let providerCount = await provider.count()
+        try self.expect(providerCount == 1, "local analytics provider was called once during overlapping refresh")
+        try self.expect(FileManager.default.fileExists(atPath: cacheURL.path), "local analytics cache writes under supplied cache path")
+
+        let schedulerProvider = DelayedCountingLocalAnalyticsProvider(providerKind: .claude, now: now, delayNanoseconds: 1_000_000)
+        let schedulerStore = LocalUsageAnalyticsStore(
+            providerKind: .claude,
+            provider: schedulerProvider,
+            cacheURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("quota-pulse-local-analytics-scheduler-\(UUID().uuidString).json"))
+        let scheduler = LocalUsageAnalyticsScheduler(stores: [schedulerStore], interval: 300)
+        scheduler.refreshNow()
+        try await Self.waitUntil {
+            await schedulerProvider.count() >= 1
+        }
+        try self.expect(schedulerStore.snapshot.provider == .claude, "local analytics scheduler refreshes supplied store")
+        let schedulerProviderCount = await schedulerProvider.count()
+        try self.expect(schedulerProviderCount == 1, "local analytics scheduler manual refresh does not tight-loop")
+    }
+
     private func refreshCadenceAndBackoff() async throws {
         let policy = RefreshBackoffPolicy(maximumDelay: 300)
         try self.expect(RefreshCadence.fast.interval == 30, "fast cadence")
@@ -1009,7 +1192,7 @@ private final class Harness {
         try self.expect(Self.secondsUntil(scheduler.claudeState.nextRefreshAt, from: clock.now) == 300, "Claude Auto baseline is 5m")
 
         scheduler.setDashboardVisible(true)
-        try self.expect(Self.secondsUntil(scheduler.claudeState.nextRefreshAt, from: clock.now) == 30, "Claude Auto watching dashboard can use fast refresh")
+        try self.expect(Self.secondsUntil(scheduler.claudeState.nextRefreshAt, from: clock.now) == 300, "Claude Auto does not speed up only because Overview is visible")
 
         scheduler.updatePresence(.idle)
         try self.expect(Self.secondsUntil(scheduler.codexState.nextRefreshAt, from: clock.now) == 60, "Codex Auto idle slows to 1m")
@@ -1259,11 +1442,16 @@ private final class Harness {
         let title = UsageDisplayFormatter.title(codex: codex, claude: claude)
         let compact = UsageDisplayFormatter.compactTitle(codex: codex, claude: claude)
         let multiline = UsageDisplayFormatter.menuBarMultilineText(codex: codex, claude: claude)
+        let claudeFirst = UsageDisplayFormatter.menuBarMultilineText(
+            codex: codex,
+            claude: claude,
+            providerOrder: [.claude, .codex])
         try self.expect(title.contains("Codex 63%"), "title includes Codex")
         try self.expect(title.contains("Claude 85%"), "title includes Claude")
         try self.expect(compact.contains("Cx 63%"), "compact title includes Codex")
         try self.expect(compact.contains("Cl 85%"), "compact title includes Claude")
         try self.expect(multiline == "Cx 63%\nCl 85%", "menu bar multiline text includes both providers")
+        try self.expect(claudeFirst == "Cl 85%\nCx 63%", "menu bar multiline text can render Claude first")
 
         let errorText = UsageDisplayFormatter.menuBarCompactText(
             codex: UsageSnapshot.error("codex unavailable"),
@@ -1274,6 +1462,45 @@ private final class Harness {
         try self.expect(UsageDisplayFormatter.progressFraction(forRemainingPercent: -10) == 0, "progress clamps low")
         try self.expect(UsageDisplayFormatter.progressFraction(forRemainingPercent: 120) == 1, "progress clamps high")
         try self.expect(UsageDisplayFormatter.progressFraction(forRemainingPercent: nil) == nil, "progress allows unavailable")
+    }
+
+    private func providerOrderStoreAndFormatter() async throws {
+        let suiteName = "QuotaPulseTestHarness.providerOrder.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            throw HarnessFailure("provider order defaults suite unavailable")
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let key = "provider-order"
+        let store = ProviderOrderStore(defaults: defaults, key: key)
+        try self.expect(store.providers == [.codex, .claude], "provider order defaults to Codex first")
+
+        store.set([.claude, .codex])
+        try self.expect(store.providers == [.claude, .codex], "provider order accepts Claude first")
+
+        let reloaded = ProviderOrderStore(defaults: defaults, key: key)
+        try self.expect(reloaded.providers == [.claude, .codex], "provider order persists")
+
+        reloaded.move(.claude, direction: .down)
+        try self.expect(reloaded.providers == [.codex, .claude], "provider order move down restores Codex first")
+
+        let normalized = ProviderKind.normalizedOrder([.claude, .claude])
+        try self.expect(normalized == [.claude, .codex], "provider order removes duplicates and appends missing providers")
+
+        let codex = try await FixtureCodexUsageProvider(mode: .success).fetchUsage()
+        let claude = try await FixtureClaudeUsageProvider(mode: .success).fetchUsage()
+        let lines = UsageDisplayFormatter.menuBarLines(
+            codex: codex,
+            claude: claude,
+            providerOrder: [.claude, .codex])
+        try self.expect(lines.map(\.provider) == [.claude, .codex], "menu bar lines follow provider order")
+        try self.expect(lines.map(\.compactText) == ["Cl 85%", "Cx 63%"], "menu bar line text follows provider order")
+        try self.expect(
+            UsageDisplayFormatter.menuBarAccessibilityText(codex: codex, claude: claude, providerOrder: [.claude, .codex])
+                .hasPrefix("Claude 85%, Codex 63%"),
+            "menu bar accessibility follows provider order")
     }
 
     private static func makeTempDirectory() throws -> URL {
@@ -1289,6 +1516,25 @@ private final class Harness {
 
     private static func secondsUntil(_ date: Date?, from now: Date) -> Int? {
         date.map { Int(round($0.timeIntervalSince(now))) }
+    }
+
+    private static func iso(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    private static func waitUntil(
+        timeout: TimeInterval = 1,
+        condition: @escaping () async -> Bool)
+        async throws
+    {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() { return }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        throw HarnessFailure("timed out waiting for async condition")
     }
 
     private static func claudeCredentialsJSON(accessToken: String) -> String {
@@ -1436,19 +1682,31 @@ private final class KeychainReadCounter: @unchecked Sendable {
     var calls = 0
 }
 
+private final class KeychainPromptRecorder: @unchecked Sendable {
+    var values: [Bool] = []
+}
+
 private struct StubClaudeKeychainReader: ClaudeOAuthKeychainReading {
     let data: Data?
     let error: Error?
     let counter: KeychainReadCounter?
+    let promptRecorder: KeychainPromptRecorder?
 
-    init(data: Data? = nil, error: Error? = nil, counter: KeychainReadCounter? = nil) {
+    init(
+        data: Data? = nil,
+        error: Error? = nil,
+        counter: KeychainReadCounter? = nil,
+        promptRecorder: KeychainPromptRecorder? = nil)
+    {
         self.data = data
         self.error = error
         self.counter = counter
+        self.promptRecorder = promptRecorder
     }
 
     func readClaudeOAuthCredentialData(allowUserPrompt: Bool) throws -> Data? {
         self.counter?.calls += 1
+        self.promptRecorder?.values.append(allowUserPrompt)
         if let error {
             throw error
         }
@@ -1512,6 +1770,42 @@ private struct DelayedProvider: CodexUsageProviding, Sendable {
             weeklyResetAt: nil,
             source: .fixture,
             updatedAt: Date(timeIntervalSince1970: 1_800_000_000))
+    }
+}
+
+private actor DelayedCountingLocalAnalyticsProvider: LocalUsageAnalyticsProviding {
+    private let providerKind: ProviderKind
+    private let now: Date
+    private let delayNanoseconds: UInt64
+    private var fetchCount = 0
+
+    init(providerKind: ProviderKind, now: Date, delayNanoseconds: UInt64) {
+        self.providerKind = providerKind
+        self.now = now
+        self.delayNanoseconds = delayNanoseconds
+    }
+
+    func fetchAnalytics() async throws -> LocalUsageAnalyticsSnapshot {
+        self.fetchCount += 1
+        try await Task.sleep(nanoseconds: self.delayNanoseconds)
+        return LocalUsageAnalyticsSnapshot(
+            provider: self.providerKind,
+            todayCostUSD: 0.01,
+            todayTokens: 1_000 + self.fetchCount,
+            last30DaysCostUSD: 0.25,
+            last30DaysTokens: 10_000 + self.fetchCount,
+            latestTokens: 500 + self.fetchCount,
+            topModel: self.providerKind == .codex ? "gpt-5.4-codex" : "claude-sonnet-4.5",
+            dailyHistory: [
+                LocalUsageDailyBucket(date: "2027-01-15", totalTokens: 1_000 + self.fetchCount, costUSD: 0.01, requestCount: 1),
+            ],
+            updatedAt: self.now,
+            sourceLabel: "Local analytics test fixture",
+            isCostPartial: false)
+    }
+
+    func count() -> Int {
+        self.fetchCount
     }
 }
 

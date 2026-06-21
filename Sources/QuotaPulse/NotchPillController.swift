@@ -7,6 +7,10 @@ final class NotchPillController {
     private let codexStore: UsageStore
     private let claudeStore: UsageStore
     private let scheduler: RefreshScheduler
+    private let codexAnalyticsStore: LocalUsageAnalyticsStore
+    private let claudeAnalyticsStore: LocalUsageAnalyticsStore
+    private let analyticsScheduler: LocalUsageAnalyticsScheduler
+    private let providerOrderStore: ProviderOrderStore
     private var pillPanel: NSPanel?
     private var detailPanel: NSPanel?
     private var isPinned = false
@@ -14,10 +18,22 @@ final class NotchPillController {
     private var isHoveringDetail = false
     private var closeWorkItem: DispatchWorkItem?
 
-    init(codexStore: UsageStore, claudeStore: UsageStore, scheduler: RefreshScheduler) {
+    init(
+        codexStore: UsageStore,
+        claudeStore: UsageStore,
+        scheduler: RefreshScheduler,
+        codexAnalyticsStore: LocalUsageAnalyticsStore,
+        claudeAnalyticsStore: LocalUsageAnalyticsStore,
+        analyticsScheduler: LocalUsageAnalyticsScheduler,
+        providerOrderStore: ProviderOrderStore)
+    {
         self.codexStore = codexStore
         self.claudeStore = claudeStore
         self.scheduler = scheduler
+        self.codexAnalyticsStore = codexAnalyticsStore
+        self.claudeAnalyticsStore = claudeAnalyticsStore
+        self.analyticsScheduler = analyticsScheduler
+        self.providerOrderStore = providerOrderStore
     }
 
     func showIfAvailable() {
@@ -72,10 +88,16 @@ final class NotchPillController {
         let root = HoverPanelView(
             codexStore: self.codexStore,
             claudeStore: self.claudeStore,
+            codexAnalyticsStore: self.codexAnalyticsStore,
+            claudeAnalyticsStore: self.claudeAnalyticsStore,
             scheduler: self.scheduler,
+            providerOrderStore: self.providerOrderStore,
             isPinned: self.isPinned,
             maxPanelHeight: maxPanelHeight,
-            onRefresh: { [weak self] in self?.scheduler.refreshNow() },
+            onRefresh: { [weak self] in
+                self?.scheduler.refreshNow()
+                self?.analyticsScheduler.refreshNow()
+            },
             onTogglePin: { [weak self] in self?.togglePinned() },
             onQuit: { NSApp.terminate(nil) },
             onPreferredSizeChange: { [weak self] preferredSize in

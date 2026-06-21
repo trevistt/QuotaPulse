@@ -11,11 +11,15 @@ enum UISmokeCheck {
             provider: FixtureClaudeUsageProvider(mode: .success),
             cache: UsageSnapshotCache(url: Self.tempCacheURL("claude")))
         let scheduler = RefreshScheduler(stores: [codexStore, claudeStore])
+        let analytics = self.makeAnalyticsStores("main")
+        let providerOrderStore = self.makeProviderOrderStore("main")
 
         let semaphore = DispatchSemaphore(value: 0)
         Task { @MainActor in
             _ = await codexStore.refresh()
             _ = await claudeStore.refresh()
+            _ = await analytics.codex.refresh()
+            _ = await analytics.claude.refresh()
             semaphore.signal()
         }
         while semaphore.wait(timeout: .now()) == .timedOut {
@@ -25,7 +29,11 @@ enum UISmokeCheck {
         let controller = StatusItemController(
             codexStore: codexStore,
             claudeStore: claudeStore,
-            scheduler: scheduler)
+            scheduler: scheduler,
+            codexAnalyticsStore: analytics.codex,
+            claudeAnalyticsStore: analytics.claude,
+            analyticsScheduler: analytics.scheduler,
+            providerOrderStore: providerOrderStore)
 
         let display = controller.titleForTesting()
         let mode = controller.displayModeForTesting()
@@ -59,6 +67,12 @@ enum UISmokeCheck {
             return false
         }
         guard self.smartRefreshControlsSmokePassed() else {
+            return false
+        }
+        guard self.localAnalyticsSmokePassed() else {
+            return false
+        }
+        guard self.providerOrderSmokePassed() else {
             return false
         }
         guard controller.preparePopoverForTesting() else {
@@ -151,12 +165,14 @@ enum UISmokeCheck {
             pausedReason: .locked,
             lastStatusText: "Paused")
 
-        guard HoverPanelView.providerStatusTextForTesting(provider: .codex, state: nextState, now: now) == "Next 24s" else {
-            print("UI smoke failed: Codex next refresh status text is not compact")
+        let codexNextText = HoverPanelView.providerStatusTextForTesting(provider: .codex, state: nextState, now: now)
+        guard codexNextText.hasPrefix("Next "), codexNextText.contains("24s") else {
+            print("UI smoke failed: Codex next refresh status text should include clock time and countdown, got `\(codexNextText)`")
             return false
         }
-        guard HoverPanelView.providerStatusTextForTesting(provider: .claude, state: cooldownState, now: now) == "Cooldown 4m" else {
-            print("UI smoke failed: Claude cooldown status text is not compact")
+        let claudeCooldownText = HoverPanelView.providerStatusTextForTesting(provider: .claude, state: cooldownState, now: now)
+        guard claudeCooldownText.hasPrefix("Cooldown until "), claudeCooldownText.contains("4m") else {
+            print("UI smoke failed: Claude cooldown status text should include clock time and countdown, got `\(claudeCooldownText)`")
             return false
         }
         guard HoverPanelView.providerStatusTextForTesting(provider: .claude, state: pausedState, now: now) == "Paused screen locked" else {
@@ -179,10 +195,15 @@ enum UISmokeCheck {
             cache: UsageSnapshotCache(url: Self.tempCacheURL("claude-healthy")))
         healthyCodexStore.replaceSnapshotForTesting(self.snapshot(sessionRemaining: 63, weeklyRemaining: 39))
         healthyClaudeStore.replaceSnapshotForTesting(self.snapshot(sessionRemaining: 92, weeklyRemaining: 82))
+        let healthyAnalytics = self.makeAnalyticsStores("healthy")
         let healthyController = StatusItemController(
             codexStore: healthyCodexStore,
             claudeStore: healthyClaudeStore,
-            scheduler: RefreshScheduler(stores: [healthyCodexStore, healthyClaudeStore]))
+            scheduler: RefreshScheduler(stores: [healthyCodexStore, healthyClaudeStore]),
+            codexAnalyticsStore: healthyAnalytics.codex,
+            claudeAnalyticsStore: healthyAnalytics.claude,
+            analyticsScheduler: healthyAnalytics.scheduler,
+            providerOrderStore: self.makeProviderOrderStore("healthy"))
         guard self.waitForMenuBarValues(healthyController, codex: "63%", claude: "92%") else {
             print("UI smoke failed: healthy Claude menu bar value did not render as 92%")
             return false
@@ -204,10 +225,15 @@ enum UISmokeCheck {
         codexStore.replaceSnapshotForTesting(initialCodex)
         claudeStore.replaceSnapshotForTesting(initialClaude)
         let scheduler = RefreshScheduler(stores: [codexStore, claudeStore])
+        let analytics = self.makeAnalyticsStores("stale-auth")
         let controller = StatusItemController(
             codexStore: codexStore,
             claudeStore: claudeStore,
-            scheduler: scheduler)
+            scheduler: scheduler,
+            codexAnalyticsStore: analytics.codex,
+            claudeAnalyticsStore: analytics.claude,
+            analyticsScheduler: analytics.scheduler,
+            providerOrderStore: self.makeProviderOrderStore("stale-auth"))
 
         guard self.waitForMenuBarValues(controller, codex: "63%", claude: "89%") else {
             print("UI smoke failed: stale auth initial menu bar values were not rendered")
@@ -243,10 +269,15 @@ enum UISmokeCheck {
             sessionRemaining: 89,
             weeklyRemaining: 82,
             sessionResetAt: Date().addingTimeInterval(-1)))
+        let expiredAnalytics = self.makeAnalyticsStores("expired")
         let expiredController = StatusItemController(
             codexStore: codexStore,
             claudeStore: expiredClaudeStore,
-            scheduler: RefreshScheduler(stores: [codexStore, expiredClaudeStore]))
+            scheduler: RefreshScheduler(stores: [codexStore, expiredClaudeStore]),
+            codexAnalyticsStore: expiredAnalytics.codex,
+            claudeAnalyticsStore: expiredAnalytics.claude,
+            analyticsScheduler: expiredAnalytics.scheduler,
+            providerOrderStore: self.makeProviderOrderStore("expired"))
         expiredClaudeStore.replaceSnapshotForTesting(expiredClaudeStore.snapshot.markedStale(errorMessage: "OAuth unauthorized; run Claude to refresh login."))
         guard self.waitForMenuBarValues(expiredController, codex: "63%", claude: "ERR") else {
             let values = expiredController.menuBarValuesForTesting()
@@ -272,10 +303,15 @@ enum UISmokeCheck {
         codexStore.replaceSnapshotForTesting(self.snapshot(sessionRemaining: 63, weeklyRemaining: 39))
         claudeStore.replaceSnapshotForTesting(self.snapshot(sessionRemaining: 100, weeklyRemaining: 83))
         let scheduler = RefreshScheduler(stores: [codexStore, claudeStore])
+        let analytics = self.makeAnalyticsStores("sync")
         let controller = StatusItemController(
             codexStore: codexStore,
             claudeStore: claudeStore,
-            scheduler: scheduler)
+            scheduler: scheduler,
+            codexAnalyticsStore: analytics.codex,
+            claudeAnalyticsStore: analytics.claude,
+            analyticsScheduler: analytics.scheduler,
+            providerOrderStore: self.makeProviderOrderStore("sync"))
 
         guard self.waitForMenuBarValues(controller, codex: "63%", claude: "100%") else {
             let values = controller.menuBarValuesForTesting()
@@ -331,15 +367,15 @@ enum UISmokeCheck {
 
     private static func panelHeightSmokePassed() -> Bool {
         let overviewSize = HoverPanelView.preferredContentSizeForTesting(
-            bodyHeight: 392,
+            bodyHeight: 725,
             tabBarHeight: 45,
-            maxHeight: 560)
-        guard overviewSize.height < 500 else {
-            print("UI smoke failed: overview panel height should be content-aware, got \(overviewSize.height)")
+            maxHeight: 860)
+        guard overviewSize.height <= 860 else {
+            print("UI smoke failed: comprehensive overview panel height should clamp to max, got \(overviewSize.height)")
             return false
         }
-        guard overviewSize.height >= 430 else {
-            print("UI smoke failed: overview panel height should not clip expected controls, got \(overviewSize.height)")
+        guard overviewSize.height >= 760 else {
+            print("UI smoke failed: comprehensive overview panel height should allow cockpit content, got \(overviewSize.height)")
             return false
         }
 
@@ -408,6 +444,30 @@ enum UISmokeCheck {
             print("UI smoke failed: secondary-screen panel frame escaped visible screen: \(secondaryPanelFrame)")
             return false
         }
+
+        let currentVisibleFrame = CGRect(x: 0, y: 0, width: 800, height: 900)
+        let currentFrame = CGRect(x: 360, y: 180, width: 370, height: 620)
+        let resizedFrame = StatusItemController.visiblePanelFramePreservingTopEdgeForTesting(
+            currentFrame: currentFrame,
+            visibleFrame: currentVisibleFrame,
+            preferredSize: CGSize(width: 370, height: 760))
+        guard abs(resizedFrame.maxY - currentFrame.maxY) < 0.5 else {
+            print("UI smoke failed: visible panel resize should preserve top edge, got \(resizedFrame)")
+            return false
+        }
+        guard self.frame(resizedFrame, fitsInside: currentVisibleFrame) else {
+            print("UI smoke failed: visible panel resize escaped visible screen: \(resizedFrame)")
+            return false
+        }
+
+        let tooTallFrame = StatusItemController.visiblePanelFramePreservingTopEdgeForTesting(
+            currentFrame: CGRect(x: 360, y: 8, width: 370, height: 760),
+            visibleFrame: CGRect(x: 0, y: 0, width: 800, height: 640),
+            preferredSize: CGSize(width: 370, height: 760))
+        guard self.frame(tooTallFrame, fitsInside: CGRect(x: 0, y: 0, width: 800, height: 640)) else {
+            print("UI smoke failed: visible panel resize should clamp on short screens: \(tooTallFrame)")
+            return false
+        }
         return true
     }
 
@@ -472,6 +532,116 @@ enum UISmokeCheck {
     private static func tempCacheURL(_ name: String) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("quota-pulse-smoke-\(name)-\(UUID().uuidString).json")
+    }
+
+    private static func makeAnalyticsStores(_ name: String)
+        -> (codex: LocalUsageAnalyticsStore, claude: LocalUsageAnalyticsStore, scheduler: LocalUsageAnalyticsScheduler)
+    {
+        let codex = LocalUsageAnalyticsStore(
+            providerKind: .codex,
+            provider: FixtureLocalUsageAnalyticsProvider(provider: .codex, mode: .full),
+            cacheURL: Self.tempCacheURL("analytics-codex-\(name)"))
+        let claude = LocalUsageAnalyticsStore(
+            providerKind: .claude,
+            provider: FixtureLocalUsageAnalyticsProvider(provider: .claude, mode: .full),
+            cacheURL: Self.tempCacheURL("analytics-claude-\(name)"))
+        return (codex, claude, LocalUsageAnalyticsScheduler(stores: [codex, claude]))
+    }
+
+    private static func localAnalyticsSmokePassed() -> Bool {
+        let analytics = self.makeAnalyticsStores("analytics-smoke")
+        let semaphore = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            _ = await analytics.codex.refresh()
+            _ = await analytics.claude.refresh()
+            semaphore.signal()
+        }
+        while semaphore.wait(timeout: .now()) == .timedOut {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        guard analytics.codex.snapshot.hasAnyData else {
+            print("UI smoke failed: Codex fixture analytics did not render data")
+            return false
+        }
+        guard analytics.claude.snapshot.hasAnyData else {
+            print("UI smoke failed: Claude fixture analytics did not render data")
+            return false
+        }
+        guard LocalUsageAnalyticsFormatter.costText(analytics.codex.snapshot.todayCostUSD) != "unavailable" else {
+            print("UI smoke failed: Codex fixture analytics cost text unavailable")
+            return false
+        }
+        guard LocalUsageAnalyticsFormatter.tokenText(analytics.claude.snapshot.todayTokens) != "unavailable" else {
+            print("UI smoke failed: Claude fixture analytics token text unavailable")
+            return false
+        }
+        return true
+    }
+
+    private static func providerOrderSmokePassed() -> Bool {
+        let codex = self.snapshot(sessionRemaining: 63, weeklyRemaining: 39)
+        let claude = self.snapshot(sessionRemaining: 85, weeklyRemaining: 58)
+
+        let defaultLines = UsageDisplayFormatter.menuBarLines(codex: codex, claude: claude)
+        guard defaultLines.map(\.provider) == [.codex, .claude] else {
+            print("UI smoke failed: default provider order should be Codex, Claude")
+            return false
+        }
+
+        let claudeFirstLines = UsageDisplayFormatter.menuBarLines(
+            codex: codex,
+            claude: claude,
+            providerOrder: [.claude, .codex])
+        guard claudeFirstLines.map(\.provider) == [.claude, .codex],
+              claudeFirstLines.map(\.compactText).joined(separator: "\n") == "Cl 85%\nCx 63%"
+        else {
+            print("UI smoke failed: Claude-first menu bar lines are not ordered correctly")
+            return false
+        }
+        let accessibility = UsageDisplayFormatter.menuBarAccessibilityText(
+            codex: codex,
+            claude: claude,
+            providerOrder: [.claude, .codex])
+        guard accessibility.hasPrefix("Claude 85%, Codex 63%") else {
+            print("UI smoke failed: accessibility label does not follow provider order, got `\(accessibility)`")
+            return false
+        }
+
+        let store = self.makeProviderOrderStore("provider-order")
+        store.set([.claude, .codex])
+        guard store.providers == [.claude, .codex] else {
+            print("UI smoke failed: provider order store did not switch to Claude first")
+            return false
+        }
+        let reloaded = ProviderOrderStore(defaults: .standard, key: storeKeyForTesting(store))
+        guard reloaded.providers == [.claude, .codex] else {
+            print("UI smoke failed: provider order did not persist")
+            return false
+        }
+        store.move(.claude, direction: .down)
+        guard store.providers == [.codex, .claude] else {
+            print("UI smoke failed: provider order move down did not restore Codex first")
+            return false
+        }
+
+        let tabs = DashboardTab.orderedTabs(providerOrder: [.claude, .codex])
+        guard tabs == [.overview, .claude, .codex] else {
+            print("UI smoke failed: dashboard tabs do not follow provider order")
+            return false
+        }
+        return true
+    }
+
+    private static func makeProviderOrderStore(_ name: String) -> ProviderOrderStore {
+        ProviderOrderStore(defaults: .standard, key: self.providerOrderKey(name))
+    }
+
+    private static func providerOrderKey(_ name: String) -> String {
+        "QuotaPulse.smoke.providerOrder.\(name).\(UUID().uuidString)"
+    }
+
+    private static func storeKeyForTesting(_ store: ProviderOrderStore) -> String {
+        store.keyForTesting
     }
 }
 

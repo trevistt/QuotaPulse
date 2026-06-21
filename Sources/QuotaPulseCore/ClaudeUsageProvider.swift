@@ -126,6 +126,10 @@ public enum ClaudeOAuthCredentialsStore {
         QuotaPulseEnvironment.isEnabled("QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN", in: env)
     }
 
+    public static func isKeychainPromptAllowed(env: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        QuotaPulseEnvironment.isEnabled("QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT", in: env)
+    }
+
     public static func load(env: [String: String] = ProcessInfo.processInfo.environment) throws -> ClaudeOAuthCredentials {
         try self.loadRecord(env: env).credentials
     }
@@ -161,7 +165,8 @@ public enum ClaudeOAuthCredentialsStore {
             throw ClaudeUsageProviderError.missingCredentials
         }
 
-        guard let keychainData = try keychainReader.readClaudeOAuthCredentialData(allowUserPrompt: true),
+        let allowUserPrompt = self.isKeychainPromptAllowed(env: env)
+        guard let keychainData = try keychainReader.readClaudeOAuthCredentialData(allowUserPrompt: allowUserPrompt),
               !keychainData.isEmpty
         else {
             throw ClaudeUsageProviderError.missingCredentials

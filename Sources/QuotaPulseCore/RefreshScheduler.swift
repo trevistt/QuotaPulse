@@ -199,7 +199,6 @@ public enum ProviderRefreshPolicy {
         case .claude:
             if presence == .idle { return 300 }
             if unchangedSuccesses >= 3 { return 300 }
-            if dashboardVisible { return 30 }
             if let fastModeUntil, fastModeUntil > now { return 30 }
             return 300
         }
@@ -343,9 +342,6 @@ public final class RefreshScheduler: ObservableObject {
     public func setDashboardVisible(_ visible: Bool) {
         guard self.dashboardVisible != visible else { return }
         self.dashboardVisible = visible
-        if visible {
-            self.fastModeUntil[.claude] = self.now().addingTimeInterval(ProviderRefreshPolicy.claudeFastModeDuration)
-        }
         self.rescheduleAutomaticProviders()
     }
 

@@ -54,7 +54,9 @@ write_open_plist() {
         <string>--stderr</string>
         <string>$APP_ERR_XML</string>
         <string>--env</string>
-        <string>QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN=1</string>
+        <string>QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN=</string>
+        <string>--env</string>
+        <string>QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT=</string>
         <string>--env</string>
         <string>QUOTA_PULSE_ENABLE_CLAUDE_CLI=</string>
         <string>$APP_DIR_XML</string>
@@ -92,4 +94,4 @@ load_open_at_login
 echo "Open at Login enabled: $PLIST"
 echo "Service: $SERVICE"
 echo "Logs: $LOG_DIR"
-echo "Claude OAuth Keychain discovery is enabled; Claude CLI fallback is not enabled."
+echo "Claude OAuth Keychain discovery is disabled for unattended login; Claude CLI fallback is not enabled."
