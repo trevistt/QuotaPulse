@@ -172,6 +172,8 @@ public protocol LocalUsageAnalyticsProviding: Sendable {
 public final class LocalUsageAnalyticsStore: ObservableObject {
     @Published public private(set) var snapshot: LocalUsageAnalyticsSnapshot
     @Published public private(set) var isRefreshing = false
+    @Published public private(set) var lastSuccessfulRefreshAt: Date?
+    @Published public private(set) var lastErrorMessage: String?
 
     private let providerKind: ProviderKind
     private let provider: any LocalUsageAnalyticsProviding
@@ -186,6 +188,9 @@ public final class LocalUsageAnalyticsStore: ObservableObject {
         self.provider = provider
         self.cache = cache
         self.snapshot = cache.load() ?? LocalUsageAnalyticsSnapshot.unavailable(provider: providerKind)
+        if self.snapshot.hasAnyData, self.snapshot.errorMessage == nil, !self.snapshot.isStale {
+            self.lastSuccessfulRefreshAt = self.snapshot.updatedAt
+        }
     }
 
     public convenience init(
@@ -208,10 +213,17 @@ public final class LocalUsageAnalyticsStore: ObservableObject {
         do {
             let snapshot = try await self.provider.fetchAnalytics()
             self.snapshot = snapshot
+            if snapshot.hasAnyData, snapshot.errorMessage == nil, !snapshot.isStale {
+                self.lastSuccessfulRefreshAt = snapshot.updatedAt
+                self.lastErrorMessage = nil
+            } else if let message = snapshot.errorMessage {
+                self.lastErrorMessage = UsageSnapshot.sanitized(message)
+            }
             self.cache.save(snapshot)
             return true
         } catch {
             let message = UsageSnapshot.sanitized(error.localizedDescription)
+            self.lastErrorMessage = message
             if self.snapshot.hasAnyData {
                 self.snapshot = self.snapshot.markedStale(errorMessage: message)
             } else if let cached = self.cache.load(), cached.hasAnyData {
@@ -227,6 +239,12 @@ public final class LocalUsageAnalyticsStore: ObservableObject {
 
     public func replaceSnapshotForTesting(_ snapshot: LocalUsageAnalyticsSnapshot) {
         self.snapshot = snapshot
+        if snapshot.hasAnyData, snapshot.errorMessage == nil, !snapshot.isStale {
+            self.lastSuccessfulRefreshAt = snapshot.updatedAt
+            self.lastErrorMessage = nil
+        } else if let message = snapshot.errorMessage {
+            self.lastErrorMessage = UsageSnapshot.sanitized(message)
+        }
     }
 }
 

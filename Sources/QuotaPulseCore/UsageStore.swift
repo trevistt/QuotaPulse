@@ -37,6 +37,8 @@ public final class UsageStore: ObservableObject {
     @Published public private(set) var snapshot: UsageSnapshot
     @Published public private(set) var isRefreshing = false
     @Published public private(set) var consecutiveFailures = 0
+    @Published public private(set) var lastSuccessfulRefreshAt: Date?
+    @Published public private(set) var lastErrorMessage: String?
 
     private let provider: any CodexUsageProviding
     private let cache: UsageSnapshotCache
@@ -45,6 +47,9 @@ public final class UsageStore: ObservableObject {
         self.provider = provider
         self.cache = cache
         self.snapshot = cache.load() ?? UsageSnapshot.error("No usage data yet.")
+        if self.snapshot.errorMessage == nil, !self.snapshot.isStale {
+            self.lastSuccessfulRefreshAt = self.snapshot.updatedAt
+        }
     }
 
     @discardableResult
@@ -57,12 +62,15 @@ public final class UsageStore: ObservableObject {
             let snapshot = try await self.provider.fetchUsage()
             self.snapshot = snapshot
             self.consecutiveFailures = 0
+            self.lastSuccessfulRefreshAt = snapshot.updatedAt
+            self.lastErrorMessage = nil
             self.cache.save(snapshot)
             return true
         } catch {
-            let message = error.localizedDescription
+            let message = UsageSnapshot.sanitized(error.localizedDescription)
             let rateLimitRetryAt = (error as? ClaudeOAuthRateLimitError)?.retryAt
             self.consecutiveFailures += 1
+            self.lastErrorMessage = message
             if self.snapshot.sessionPercentRemaining != nil || self.snapshot.weeklyPercentRemaining != nil {
                 self.snapshot = self.snapshot.markedStale(
                     errorMessage: message,
@@ -82,5 +90,11 @@ public final class UsageStore: ObservableObject {
 
     public func replaceSnapshotForTesting(_ snapshot: UsageSnapshot) {
         self.snapshot = snapshot
+        if snapshot.errorMessage == nil, !snapshot.isStale {
+            self.lastSuccessfulRefreshAt = snapshot.updatedAt
+            self.lastErrorMessage = nil
+        } else if let message = snapshot.errorMessage {
+            self.lastErrorMessage = message
+        }
     }
 }

@@ -21,6 +21,7 @@ struct HoverPanelView: View {
     @State private var measuredBodyHeight = DashboardLayout.defaultBodyHeight
     @State private var measuredControlsHeight = DashboardLayout.defaultControlsHeight
     @State private var countdownNow = Date()
+    @State private var diagnosticsCopied = false
 
     static var preferredContentSize: CGSize {
         self.preferredContentSize(maxHeight: DashboardLayout.defaultMaxPanelHeight)
@@ -182,6 +183,8 @@ struct HoverPanelView: View {
                     snapshot: self.snapshot(for: provider),
                     analytics: self.analyticsSnapshot(for: provider))
             }
+            self.overviewAnalyticsSection
+            self.diagnosticsSection
         case .codex:
             providerSection(
                 provider: .codex,
@@ -328,8 +331,6 @@ struct HoverPanelView: View {
             if snapshot.isStale || snapshot.errorMessage != nil {
                 compactStateMessage(provider: provider, snapshot: snapshot)
             }
-
-            analyticsSummarySection(provider: provider, snapshot: analytics, accent: accent, compact: true)
         }
         .padding(9)
         .background(
@@ -338,6 +339,125 @@ struct HoverPanelView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
                         .stroke(accent.opacity(0.24), lineWidth: 0.75)))
+    }
+
+    private var overviewAnalyticsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "chart.bar.xaxis")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.cyan.opacity(0.92))
+                Text("Local analytics")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.76))
+                Text("Estimated")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.white.opacity(0.07)))
+                    .foregroundStyle(.white.opacity(0.52))
+                Spacer(minLength: 0)
+            }
+
+            ForEach(self.orderedProviders, id: \.self) { provider in
+                self.overviewAnalyticsRow(
+                    provider: provider,
+                    analytics: self.analyticsSnapshot(for: provider))
+            }
+        }
+        .padding(9)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.white.opacity(0.045))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 0.75)))
+    }
+
+    private func overviewAnalyticsRow(
+        provider: ProviderKind,
+        analytics: LocalUsageAnalyticsSnapshot)
+        -> some View
+    {
+        let accent = Self.accent(for: provider)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                ProviderBrandIconView(
+                    provider: provider,
+                    size: 9.5,
+                    fallbackSystemImage: ProviderBrandIcon.fallbackSystemImage(for: provider))
+                    .foregroundStyle(accent)
+                    .frame(width: 12)
+                Text(provider.displayName)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.72))
+                Text(LocalUsageAnalyticsFormatter.sourceText(analytics))
+                    .font(.system(size: 8.5, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.white.opacity(0.07)))
+                    .foregroundStyle(.white.opacity(0.52))
+                Spacer(minLength: 0)
+            }
+
+            if analytics.hasAnyData {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 6),
+                        GridItem(.flexible(), spacing: 6),
+                        GridItem(.flexible(), spacing: 6),
+                    ],
+                    alignment: .leading,
+                    spacing: 5)
+                {
+                    analyticsMetric(title: "Today", value: LocalUsageAnalyticsFormatter.costText(analytics.todayCostUSD))
+                    analyticsMetric(title: "30d", value: LocalUsageAnalyticsFormatter.costText(analytics.last30DaysCostUSD))
+                    analyticsMetric(title: "Today tokens", value: LocalUsageAnalyticsFormatter.tokenText(analytics.todayTokens))
+                    analyticsMetric(title: "30d tokens", value: LocalUsageAnalyticsFormatter.tokenText(analytics.last30DaysTokens))
+                    analyticsMetric(title: "Latest", value: LocalUsageAnalyticsFormatter.tokenText(analytics.latestTokens))
+                    analyticsMetric(title: "Top model", value: analytics.topModel ?? "unknown")
+                }
+                overviewAnalyticsHistogram(snapshot: analytics, accent: accent)
+            } else {
+                Text(analytics.errorMessage ?? "No local analytics data found.")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.035))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(accent.opacity(0.16), lineWidth: 0.75)))
+    }
+
+    private func overviewAnalyticsHistogram(snapshot: LocalUsageAnalyticsSnapshot, accent: Color) -> some View {
+        let buckets = snapshot.dailyHistory.suffix(14)
+        let maxTokens = max(1, buckets.map(\.totalTokens).max() ?? 1)
+        return HStack(alignment: .center, spacing: 6) {
+            Text("14d")
+                .font(.system(size: 8.5, weight: .bold))
+                .foregroundStyle(.white.opacity(0.40))
+                .frame(width: 24, alignment: .leading)
+            HStack(alignment: .bottom, spacing: 2) {
+                ForEach(Array(buckets.enumerated()), id: \.offset) { _, bucket in
+                    RoundedRectangle(cornerRadius: 1.25, style: .continuous)
+                        .fill(bucket.totalTokens > 0 ? accent.opacity(0.72) : Color.white.opacity(0.08))
+                        .frame(
+                            width: 5,
+                            height: max(3, CGFloat(bucket.totalTokens) / CGFloat(maxTokens) * 20))
+                        .accessibilityLabel("\(bucket.date) \(bucket.totalTokens) tokens")
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(height: 22, alignment: .bottomLeading)
+        }
+        .padding(.top, 1)
+        .accessibilityLabel("\(snapshot.provider.displayName) 14 day local analytics histogram")
     }
 
     private func providerSection(
@@ -728,6 +848,11 @@ struct HoverPanelView: View {
         if provider == .claude, snapshot.hasStaleAuthFailure {
             return "Login expired; open Claude Code."
         }
+        if provider == .claude,
+           snapshot.source == .disabled || UsageDiagnosticsFormatter.errorCategory(snapshot.errorMessage) == "Credentials unavailable"
+        {
+            return "OAuth unavailable; use attended Keychain launcher."
+        }
         if snapshot.isStale {
             return "! means cached value."
         }
@@ -736,7 +861,12 @@ struct HoverPanelView: View {
 
     private static func stateMessageText(provider: ProviderKind, snapshot: UsageSnapshot) -> String {
         if provider == .claude, snapshot.hasStaleAuthFailure {
-            return UsageSnapshot.claudeLoginExpiredMessage
+            return "\(UsageSnapshot.claudeLoginExpiredMessage) If QuotaPulse still cannot read Claude, run the attended Keychain launcher while present."
+        }
+        if provider == .claude,
+           snapshot.source == .disabled || UsageDiagnosticsFormatter.errorCategory(snapshot.errorMessage) == "Credentials unavailable"
+        {
+            return "Claude OAuth is unavailable in no-Keychain daily mode. Run the attended Keychain launcher only while present, then press Refresh. Claude CLI remains off."
         }
         let message = snapshot.errorMessage ?? "Usage is stale; showing the last good reading."
         if snapshot.isStale,
@@ -746,6 +876,157 @@ struct HoverPanelView: View {
             return "\(message) ! means stale cached value."
         }
         return message
+    }
+
+    private var diagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "stethoscope")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.orange.opacity(0.95))
+                Text("Status / Diagnostics")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.76))
+                Spacer(minLength: 0)
+                Button {
+                    self.copyDiagnosticsToClipboard()
+                } label: {
+                    Label(self.diagnosticsCopied ? "Copied" : "Copy", systemImage: self.diagnosticsCopied ? "checkmark" : "doc.on.doc")
+                        .labelStyle(.titleAndIcon)
+                        .font(.system(size: 9.5, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(self.diagnosticsCopied ? Color.green.opacity(0.92) : .white.opacity(0.68))
+            }
+
+            ForEach(self.orderedProviders, id: \.self) { provider in
+                self.diagnosticProviderRow(state: self.diagnosticsState(for: provider))
+            }
+        }
+        .padding(9)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.white.opacity(0.045))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 0.75)))
+    }
+
+    private func diagnosticProviderRow(state: UsageDiagnosticsProviderState) -> some View {
+        let accent = Self.accent(for: state.provider)
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                ProviderBrandIconView(
+                    provider: state.provider,
+                    size: 9.5,
+                    fallbackSystemImage: ProviderBrandIcon.fallbackSystemImage(for: state.provider))
+                    .foregroundStyle(accent)
+                    .frame(width: 12)
+                Text(state.provider.displayName)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.76))
+                Text(UsageDiagnosticsFormatter.credentialMode(provider: state.provider, snapshot: state.snapshot))
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.white.opacity(0.07)))
+                    .foregroundStyle(.white.opacity(0.54))
+                Spacer(minLength: 0)
+            }
+
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 7),
+                    GridItem(.flexible(), spacing: 7),
+                ],
+                alignment: .leading,
+                spacing: 5)
+            {
+                diagnosticPair(
+                    title: "Last success",
+                    value: UsageDiagnosticsFormatter.lastSuccessfulText(state.lastSuccessfulRefreshAt, now: self.countdownNow))
+                diagnosticPair(
+                    title: "Last error",
+                    value: UsageDiagnosticsFormatter.errorCategory(state.lastErrorMessage ?? state.snapshot.errorMessage))
+                diagnosticPair(
+                    title: "Refresh",
+                    value: "\(state.refreshState.mode.label) · \(UsageDiagnosticsFormatter.refreshText(state: state.refreshState, now: self.countdownNow))")
+                diagnosticPair(
+                    title: "Local logs",
+                    value: UsageDiagnosticsFormatter.analyticsStatusText(
+                        state.analytics,
+                        lastSuccessfulRefreshAt: state.analyticsLastSuccessfulRefreshAt,
+                        lastErrorMessage: state.analyticsLastErrorMessage,
+                        now: self.countdownNow))
+            }
+
+            Text(UsageDiagnosticsFormatter.nextAction(provider: state.provider, snapshot: state.snapshot))
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.white.opacity(0.52))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.035))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(accent.opacity(0.16), lineWidth: 0.75)))
+    }
+
+    private func diagnosticPair(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 8.4, weight: .medium))
+                .foregroundStyle(.white.opacity(0.40))
+                .lineLimit(1)
+            Text(value)
+                .font(.system(size: 9.3, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.70))
+                .lineLimit(2)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func diagnosticsState(for provider: ProviderKind) -> UsageDiagnosticsProviderState {
+        switch provider {
+        case .codex:
+            UsageDiagnosticsProviderState(
+                provider: provider,
+                lastSuccessfulRefreshAt: self.codexStore.lastSuccessfulRefreshAt,
+                lastErrorMessage: self.codexStore.lastErrorMessage,
+                snapshot: self.codexStore.snapshot,
+                refreshState: self.scheduler.state(for: provider),
+                analytics: self.codexAnalyticsStore.snapshot,
+                analyticsLastSuccessfulRefreshAt: self.codexAnalyticsStore.lastSuccessfulRefreshAt,
+                analyticsLastErrorMessage: self.codexAnalyticsStore.lastErrorMessage)
+        case .claude:
+            UsageDiagnosticsProviderState(
+                provider: provider,
+                lastSuccessfulRefreshAt: self.claudeStore.lastSuccessfulRefreshAt,
+                lastErrorMessage: self.claudeStore.lastErrorMessage,
+                snapshot: self.claudeStore.snapshot,
+                refreshState: self.scheduler.state(for: provider),
+                analytics: self.claudeAnalyticsStore.snapshot,
+                analyticsLastSuccessfulRefreshAt: self.claudeAnalyticsStore.lastSuccessfulRefreshAt,
+                analyticsLastErrorMessage: self.claudeAnalyticsStore.lastErrorMessage)
+        }
+    }
+
+    private func diagnosticsText(now: Date = Date()) -> String {
+        UsageDiagnosticsFormatter.safeExport(
+            states: self.orderedProviders.map { self.diagnosticsState(for: $0) },
+            providerOrder: self.orderedProviders,
+            now: now)
+    }
+
+    private func copyDiagnosticsToClipboard() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(self.diagnosticsText(now: self.countdownNow), forType: .string)
+        self.diagnosticsCopied = true
     }
 
     private var controls: some View {
@@ -799,7 +1080,7 @@ struct HoverPanelView: View {
                 .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.52))
                 .frame(width: 12)
-            Text("Order")
+            Text("First")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.64))
                 .frame(width: 38, alignment: .leading)
@@ -812,39 +1093,35 @@ struct HoverPanelView: View {
     }
 
     private func providerOrderChip(provider: ProviderKind, index: Int) -> some View {
-        HStack(spacing: 3) {
-            ProviderBrandIconView(
-                provider: provider,
-                size: 8.5,
-                fallbackSystemImage: ProviderBrandIcon.fallbackSystemImage(for: provider))
-                .foregroundStyle(Self.accent(for: provider))
-                .frame(width: 10)
-            Text(provider.compactName)
-                .font(.system(size: 9.5, weight: .bold))
-                .foregroundStyle(.white.opacity(0.78))
-            Button {
-                self.providerOrderStore.move(provider, direction: .up)
-            } label: {
-                Image(systemName: "chevron.up")
+        let isFirst = index == 0
+        return Button {
+            guard !isFirst else { return }
+            self.providerOrderStore.set([provider] + self.orderedProviders.filter { $0 != provider })
+        } label: {
+            HStack(spacing: 4) {
+                ProviderBrandIconView(
+                    provider: provider,
+                    size: 8.5,
+                    fallbackSystemImage: ProviderBrandIcon.fallbackSystemImage(for: provider))
+                    .foregroundStyle(Self.accent(for: provider))
+                    .frame(width: 10)
+                Text(provider.compactName)
+                    .font(.system(size: 9.5, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.78))
+                Image(systemName: isFirst ? "checkmark" : "arrow.up")
                     .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(isFirst ? Color.green.opacity(0.88) : .white.opacity(0.58))
             }
-            .disabled(index == 0)
-            .accessibilityLabel("Move \(provider.displayName) earlier")
-            Button {
-                self.providerOrderStore.move(provider, direction: .down)
-            } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .bold))
-            }
-            .disabled(index >= self.orderedProviders.count - 1)
-            .accessibilityLabel("Move \(provider.displayName) later")
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .background(
+                Capsule()
+                    .fill(isFirst ? Color.white.opacity(0.11) : Color.white.opacity(0.075)))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(
-            Capsule()
-                .fill(Color.white.opacity(0.075)))
+        .accessibilityLabel(isFirst ? "\(provider.displayName) is first" : "Show \(provider.displayName) first")
+        .accessibilityHint("Changes the menu bar, tabs, and overview order")
     }
 
     private func smartRefreshRow(provider: ProviderKind) -> some View {
@@ -1003,13 +1280,13 @@ private enum DashboardLayout {
     static let defaultBodyHeight: CGFloat = 620
     static let defaultControlsHeight: CGFloat = 132
     static let minPanelHeight: CGFloat = 680
-    static let stablePanelHeight: CGFloat = 840
-    static let maxPanelHeightCap: CGFloat = 840
+    static let stablePanelHeight: CGFloat = 980
+    static let maxPanelHeightCap: CGFloat = 1080
     static let screenMargin: CGFloat = 8
 
     static var defaultMaxPanelHeight: CGFloat {
         let visibleHeight = NSScreen.main?.visibleFrame.height ?? 760
-        return min(self.maxPanelHeightCap, max(self.minPanelHeight, visibleHeight - 120))
+        return min(self.maxPanelHeightCap, max(self.minPanelHeight, visibleHeight - self.screenMargin * 2))
     }
 
     static func maxPanelHeight(for visibleFrame: CGRect) -> CGFloat {

@@ -10,6 +10,7 @@ Highlights:
 - Provider order preference, so the menu bar, Overview cards, provider tabs, Smart Refresh rows, and accessibility label can be Codex-first or Claude-first.
 - User-presence aware Smart Refresh pause/slowdown, jitter, Claude rate-limit cooldowns, and visible refresh feedback.
 - Read-only local analytics parsing for supported Codex and Claude log metadata, with costs labeled as estimates.
+- Status / Diagnostics summaries for refresh state, local analytics state, credential mode, and next action.
 - Public-safe launch defaults that avoid unattended Keychain prompts and keep Claude CLI fallback explicit.
 
 QuotaPulse is a local utility. It is not affiliated with, endorsed by, or sponsored by OpenAI or Anthropic.
@@ -74,6 +75,16 @@ QuotaPulse uses Smart Refresh to keep Codex and Claude usage fresh without polli
 
 The dashboard countdown text, such as `Next 24s`, updates while the dashboard is visible or pinned.
 
+## Dashboard Order
+
+The Overview prioritizes core usage before troubleshooting detail:
+
+1. Codex and Claude quota cards
+2. Local analytics estimates
+3. Status / Diagnostics
+
+This keeps quota status visible first while keeping diagnostics available below analytics.
+
 ## Provider Order
 
 The dashboard footer includes an `Order` control. Use it to switch between Codex-first and Claude-first ordering. The choice is saved locally in `UserDefaults` and applies consistently to menu bar rows, Overview cards, provider tabs, Smart Refresh rows, accessibility labels, smoke checks, and visual fixtures.
@@ -91,6 +102,21 @@ Codex local analytics supports JSONL metadata such as:
 - `payload.collaboration_mode.settings.model`
 
 QuotaPulse does not print, cache, or expose prompt or message text from local logs. Cost values are estimates based on local metadata and published-style API rate assumptions; they are not official billing records and may differ from your plan or invoice.
+
+Overview local analytics shows Today cost, 30d cost, Today tokens, 30d tokens, Latest tokens, Top model, and a compact 14-day histogram when local metadata exists. Histograms are visible in Overview and are not limited to provider tabs.
+
+## Status / Diagnostics
+
+The dashboard includes a `Status / Diagnostics` section for each provider. It summarizes:
+
+- last successful refresh
+- last error category
+- current refresh mode and status
+- local analytics status
+- credential mode
+- short next action
+
+Use the diagnostics `Copy` button when you need a safe support summary. The copied text is sanitized and must not include token values, cookies, Authorization header values, full credential JSON, or full credential paths.
 
 ## Open at Login
 
@@ -148,7 +174,7 @@ Optional packaging variables:
 - `QUOTA_PULSE_CODESIGN_IDENTITY`
 - `QUOTA_PULSE_REQUIRE_CODESIGN`
 
-The default version in the package script is `0.3.0`.
+The default version in the package script is `0.4.0`.
 
 ### Local Signing
 

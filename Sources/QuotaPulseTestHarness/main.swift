@@ -78,6 +78,8 @@ private final class Harness {
         await self.run("Dual-provider independent failure", self.dualProviderIndependentFailure)
         await self.run("Dual-provider title formatter", self.dualProviderTitleFormatter)
         await self.run("Provider order store and formatter", self.providerOrderStoreAndFormatter)
+        await self.run("Refresh diagnostics metadata", self.refreshDiagnosticsMetadata)
+        await self.run("Safe diagnostics export sanitization", self.safeDiagnosticsExportSanitization)
     }
 
     private func run(_ name: String, _ body: () async throws -> Void) async {
@@ -1503,6 +1505,90 @@ private final class Harness {
             "menu bar accessibility follows provider order")
     }
 
+    private func refreshDiagnosticsMetadata() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let success = UsageSnapshot(
+            sessionPercentRemaining: 64,
+            weeklyPercentRemaining: 52,
+            sessionResetAt: now.addingTimeInterval(3_600),
+            weeklyResetAt: now.addingTimeInterval(86_400),
+            source: .oauth,
+            updatedAt: now)
+        let provider = SequencedUsageProvider(steps: [
+            .success(success),
+            .failure("Authorization: Bearer secret-token\n/Users/example/.claude/.credentials.json"),
+        ])
+        let store = UsageStore(provider: provider, cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+
+        _ = await store.refresh()
+        try self.expect(store.lastSuccessfulRefreshAt == now, "successful refresh timestamp is tracked")
+        try self.expect(store.lastErrorMessage == nil, "success clears last error")
+
+        _ = await store.refresh()
+        try self.expect(store.lastSuccessfulRefreshAt == now, "failure preserves last successful refresh")
+        try self.expect(UsageDiagnosticsFormatter.errorCategory(store.lastErrorMessage) != "None", "failure category is available")
+        try self.expect(store.lastErrorMessage?.contains("secret-token") == false, "failure metadata is sanitized")
+    }
+
+    private func safeDiagnosticsExportSanitization() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let codex = UsageSnapshot.error("""
+        Authorization: Bearer codex-secret
+        Cookie: session=secret-cookie
+        /Users/example/.codex/auth.json
+        {"access_token":"secret","refresh_token":"refresh"}
+        """, updatedAt: now)
+        let claude = UsageSnapshot(
+            sessionPercentRemaining: nil,
+            weeklyPercentRemaining: nil,
+            sessionResetAt: nil,
+            weeklyResetAt: nil,
+            source: .disabled,
+            updatedAt: now,
+            errorMessage: "Claude usage is unavailable: OAuth credentials were not found and CLI fallback is disabled. /Users/example/.claude/.credentials.json")
+        let codexAnalytics = LocalUsageAnalyticsSnapshot.unavailable(
+            provider: .codex,
+            message: "Local usage analytics scan failed near /Users/example/.codex/sessions/private.jsonl",
+            updatedAt: now)
+        let claudeAnalytics = LocalUsageAnalyticsSnapshot.unavailable(
+            provider: .claude,
+            message: "No Claude local usage logs were found.",
+            updatedAt: now)
+
+        let export = UsageDiagnosticsFormatter.safeExport(
+            states: [
+                UsageDiagnosticsProviderState(
+                    provider: .codex,
+                    lastSuccessfulRefreshAt: nil,
+                    lastErrorMessage: codex.errorMessage,
+                    snapshot: codex,
+                    refreshState: ProviderRefreshState(provider: .codex, mode: .auto, nextRefreshAt: now.addingTimeInterval(60)),
+                    analytics: codexAnalytics,
+                    analyticsLastSuccessfulRefreshAt: nil,
+                    analyticsLastErrorMessage: codexAnalytics.errorMessage),
+                UsageDiagnosticsProviderState(
+                    provider: .claude,
+                    lastSuccessfulRefreshAt: nil,
+                    lastErrorMessage: claude.errorMessage,
+                    snapshot: claude,
+                    refreshState: ProviderRefreshState(provider: .claude, mode: .auto, nextRefreshAt: now.addingTimeInterval(300)),
+                    analytics: claudeAnalytics,
+                    analyticsLastSuccessfulRefreshAt: nil,
+                    analyticsLastErrorMessage: claudeAnalytics.errorMessage),
+            ],
+            providerOrder: [.codex, .claude],
+            now: now)
+
+        try self.expect(export.contains("QuotaPulse Diagnostics"), "safe export has title")
+        try self.expect(export.contains("Credential mode"), "safe export includes credential summary")
+        try self.expect(export.contains("Next action"), "safe export includes next action")
+        try self.expect(!export.contains("codex-secret"), "bearer value redacted")
+        try self.expect(!export.contains("secret-cookie"), "cookie value redacted")
+        try self.expect(!export.contains("access_token"), "auth JSON key/value redacted")
+        try self.expect(!export.contains("/Users/example"), "full local paths redacted")
+        try self.expect(!export.contains("Authorization:"), "Authorization header redacted")
+    }
+
     private static func makeTempDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -1755,6 +1841,31 @@ private actor DelayedCountingProvider: CodexUsageProviding {
 
     func count() -> Int {
         self.fetchCount
+    }
+}
+
+private enum SequencedUsageStep: Sendable {
+    case success(UsageSnapshot)
+    case failure(String)
+}
+
+private actor SequencedUsageProvider: CodexUsageProviding {
+    private var steps: [SequencedUsageStep]
+
+    init(steps: [SequencedUsageStep]) {
+        self.steps = steps
+    }
+
+    func fetchUsage() async throws -> UsageSnapshot {
+        guard !self.steps.isEmpty else {
+            throw CodexUsageProviderError.noUsageWindows
+        }
+        switch self.steps.removeFirst() {
+        case let .success(snapshot):
+            return snapshot
+        case let .failure(message):
+            throw CodexUsageProviderError.processFailed(message)
+        }
     }
 }
 

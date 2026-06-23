@@ -32,6 +32,10 @@ Local analytics snapshots store only aggregate fields such as timestamps, model 
 
 Cost values are local-log estimates and may differ from official billing, account plans, or invoices.
 
+## Diagnostics Export
+
+The dashboard `Status / Diagnostics` copy action creates a sanitized summary for troubleshooting. It is designed to include provider status, refresh mode, local analytics status, credential mode, and next action without including token values, cookies, Authorization header values, raw credential JSON, raw logs, or full credential paths.
+
 ## What QuotaPulse Does Not Do
 
 - No browser cookie access.
@@ -43,6 +47,7 @@ Cost values are local-log estimates and may differ from official billing, accoun
 - No credential writes.
 - No OAuth credential refresh.
 - No unattended Keychain prompts in the public launcher defaults.
+- No raw credential or local-log export from diagnostics copy.
 - No GitHub automation.
 - No notarization or publishing workflow.
 

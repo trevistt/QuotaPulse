@@ -16,7 +16,8 @@ QuotaPulse is a Swift Package with three targets.
 4. Providers return `UsageSnapshot` values for Codex and Claude.
 5. `ProviderOrderStore` loads the persisted Codex/Claude order from `UserDefaults`.
 6. UI controllers render compact menu bar status and a taller dashboard popover using the selected provider order.
-7. Errors are converted into sanitized messages before display.
+7. `UsageDiagnosticsFormatter` creates short provider diagnostics and sanitized copy/export text.
+8. Errors are converted into sanitized messages before display.
 
 ## Smart Refresh
 
@@ -29,6 +30,8 @@ Auto mode can adapt to dashboard visibility, unchanged successful reads, user pr
 `HoverPanelView` renders provider-specific refresh controls and countdown text. Countdown text uses a visible one-second tick while the dashboard is visible or pinned.
 
 The dashboard uses a taller panel size so Overview can show both providers and the fixed footer without clipping the tab bar. Content scrolls only when needed. `StatusItemController` anchors the panel to the visible status item frame, chooses a visible screen frame for multi-screen setups, and repositions the visible panel after content or status item size changes.
+
+Overview order is quota-first: Codex and Claude quota cards render before local analytics, and `Status / Diagnostics` renders after analytics.
 
 ## Provider Order
 
@@ -47,6 +50,14 @@ Claude usage prefers OAuth-compatible local credential sources. Claude Code Keyc
 `LocalUsageAnalyticsStore` and provider-specific scanners collect aggregate local analytics from supported metadata. Codex parsing supports `payload.info.last_token_usage`, `payload.info.total_token_usage` as cumulative deltas only, and `payload.collaboration_mode.settings.model`.
 
 Local analytics cache aggregate snapshots under the current user's cache folder. They do not cache prompt text, response text, message bodies, Authorization headers, cookies, or raw logs. Cost values are estimates, not official billing.
+
+Overview local analytics renders Today cost, 30d cost, Today tokens, 30d tokens, Latest tokens, Top model, and a compact 14-day histogram for each provider when data exists.
+
+## Diagnostics
+
+`UsageStore` and `LocalUsageAnalyticsStore` track last successful refresh and last sanitized error metadata. `UsageDiagnosticsFormatter` combines quota state, refresh scheduler state, local analytics state, and credential mode into short next-action summaries.
+
+Diagnostics copy/export is intentionally summary-only. It redacts token values, cookies, Authorization headers, auth JSON, and full credential paths before text leaves the dashboard.
 
 ## Resources
 

@@ -17,11 +17,11 @@ enum VisualQAFixtureRunner {
         var canvasSize: CGSize {
             switch self {
             case .standard, .claudeFirst:
-                CGSize(width: 760, height: 1_160)
+                CGSize(width: 760, height: 1_320)
             case .compactOverview:
                 CGSize(width: 760, height: 600)
             case .tallContent:
-                CGSize(width: 760, height: 1_220)
+                CGSize(width: 760, height: 1_360)
             case .constrainedHeight:
                 CGSize(width: 760, height: 560)
             case .codexAnalyticsOnly, .claudeAnalyticsError, .noAnalytics:
@@ -32,11 +32,11 @@ enum VisualQAFixtureRunner {
         var maxPanelHeight: CGFloat? {
             switch self {
             case .standard, .claudeFirst:
-                920
+                1_080
             case .compactOverview:
                 520
             case .tallContent:
-                920
+                1_080
             case .constrainedHeight:
                 430
             case .codexAnalyticsOnly, .claudeAnalyticsError, .noAnalytics:

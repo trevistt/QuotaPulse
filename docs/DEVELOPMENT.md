@@ -25,7 +25,7 @@ Package a local app:
 Scripts/package_app.sh
 ```
 
-The default package is ad-hoc signed and uses app version `0.3.0` build `3`.
+The default package is ad-hoc signed and uses app version `0.4.0` build `4`.
 
 Run a smoke check against the packaged app:
 
@@ -49,7 +49,7 @@ This package currently uses the `QuotaPulseTestHarness` executable for validatio
 
 ## Harness Coverage
 
-`Scripts/test.sh` runs `swift run QuotaPulseTestHarness`. The harness covers provider parsing, redaction, OAuth request behavior, Claude OAuth credential reload, Claude rate-limit cooldown, Smart Refresh policy, independent per-provider refresh timing, presence pause/wake behavior, countdown text, refresh debounce, stale cached values, provider ordering, menu bar formatting, local analytics parsing, and no-Keychain credential discovery behavior.
+`Scripts/test.sh` runs `swift run QuotaPulseTestHarness`. The harness covers provider parsing, redaction, OAuth request behavior, Claude OAuth credential reload, Claude rate-limit cooldown, Smart Refresh policy, independent per-provider refresh timing, presence pause/wake behavior, countdown text, refresh debounce, stale cached values, provider ordering, menu bar formatting, local analytics parsing, diagnostics metadata, diagnostics export sanitization, and no-Keychain credential discovery behavior.
 
 The visual QA fixture should also be regenerated when dashboard layout changes:
 

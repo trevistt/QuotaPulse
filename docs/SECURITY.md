@@ -38,6 +38,10 @@ Official public releases should use Apple Developer ID signing and notarization.
 
 Local analytics scanning is read-only and designed to aggregate supported usage metadata without exposing prompt or message text. Cost values are estimates from local metadata, not official billing data.
 
+## Diagnostics Export Boundaries
+
+Diagnostics copy/export is for safe troubleshooting summaries only. It must not include token values, cookies, Authorization header values, raw credential JSON, raw local logs, or full credential paths.
+
 ## Reporting Security Issues
 
 Until a public repository process is finalized, do not file security-sensitive details in public issues. Contact the repository owner privately with:

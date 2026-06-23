@@ -72,6 +72,9 @@ enum UISmokeCheck {
         guard self.localAnalyticsSmokePassed() else {
             return false
         }
+        guard self.diagnosticsSmokePassed() else {
+            return false
+        }
         guard self.providerOrderSmokePassed() else {
             return false
         }
@@ -251,7 +254,9 @@ enum UISmokeCheck {
             return false
         }
         let message = HoverPanelView.stateMessageTextForTesting(provider: .claude, snapshot: claudeStore.snapshot)
-        guard message == UsageSnapshot.claudeLoginExpiredMessage else {
+        guard message.contains(UsageSnapshot.claudeLoginExpiredMessage),
+              message.contains("attended Keychain launcher while present")
+        else {
             print("UI smoke failed: dashboard stale auth message was not clear, got `\(message)`")
             return false
         }
@@ -573,6 +578,50 @@ enum UISmokeCheck {
         }
         guard LocalUsageAnalyticsFormatter.tokenText(analytics.claude.snapshot.todayTokens) != "unavailable" else {
             print("UI smoke failed: Claude fixture analytics token text unavailable")
+            return false
+        }
+        return true
+    }
+
+    private static func diagnosticsSmokePassed() -> Bool {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let claudeDisabled = UsageSnapshot(
+            sessionPercentRemaining: nil,
+            weeklyPercentRemaining: nil,
+            sessionResetAt: nil,
+            weeklyResetAt: nil,
+            source: .disabled,
+            updatedAt: now,
+            errorMessage: "Claude usage is unavailable: OAuth credentials were not found and CLI fallback is disabled.")
+        let message = HoverPanelView.stateMessageTextForTesting(provider: .claude, snapshot: claudeDisabled)
+        guard message.contains("no-Keychain daily mode"),
+              message.contains("Claude CLI remains off")
+        else {
+            print("UI smoke failed: Claude disabled message is not actionable, got `\(message)`")
+            return false
+        }
+
+        guard UsageDiagnosticsFormatter.credentialMode(provider: .claude, snapshot: claudeDisabled) == "No-Keychain daily mode; CLI off" else {
+            print("UI smoke failed: Claude credential mode should explain no-Keychain daily mode")
+            return false
+        }
+
+        let export = UsageDiagnosticsFormatter.safeExport(
+            states: [
+                UsageDiagnosticsProviderState(
+                    provider: .claude,
+                    lastSuccessfulRefreshAt: nil,
+                    lastErrorMessage: "Authorization: Bearer secret-value /Users/example/.claude/.credentials.json",
+                    snapshot: claudeDisabled,
+                    refreshState: ProviderRefreshState(provider: .claude, mode: .auto, nextRefreshAt: now.addingTimeInterval(300)),
+                    analytics: LocalUsageAnalyticsSnapshot.unavailable(provider: .claude, message: "No logs.", updatedAt: now),
+                    analyticsLastSuccessfulRefreshAt: nil,
+                    analyticsLastErrorMessage: nil),
+            ],
+            providerOrder: [.claude],
+            now: now)
+        guard !export.contains("secret-value"), !export.contains("/Users/example") else {
+            print("UI smoke failed: diagnostics export was not sanitized")
             return false
         }
         return true
