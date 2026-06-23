@@ -25,7 +25,7 @@ Package a local app:
 Scripts/package_app.sh
 ```
 
-The default package is ad-hoc signed and uses app version `0.4.0` build `4`.
+The default package is ad-hoc signed and uses app version `0.5.0` build `5`.
 
 Run a smoke check against the packaged app:
 
@@ -49,7 +49,7 @@ This package currently uses the `QuotaPulseTestHarness` executable for validatio
 
 ## Harness Coverage
 
-`Scripts/test.sh` runs `swift run QuotaPulseTestHarness`. The harness covers provider parsing, redaction, OAuth request behavior, Claude OAuth credential reload, Claude rate-limit cooldown, Smart Refresh policy, independent per-provider refresh timing, presence pause/wake behavior, countdown text, refresh debounce, stale cached values, provider ordering, menu bar formatting, local analytics parsing, diagnostics metadata, diagnostics export sanitization, and no-Keychain credential discovery behavior.
+`Scripts/test.sh` runs `swift run QuotaPulseTestHarness`. The harness covers provider parsing, redaction, OAuth request behavior, Claude OAuth credential reload, Claude auth-blocked retry pause and repair, Claude rate-limit cooldown, Smart Refresh policy, independent per-provider refresh timing, presence pause/wake behavior, countdown text, refresh debounce, stale cached values, provider ordering, menu bar formatting, local analytics parsing, diagnostics metadata, diagnostics export sanitization, and no-Keychain credential discovery behavior.
 
 The visual QA fixture should also be regenerated when dashboard layout changes:
 
@@ -63,6 +63,8 @@ Additional fixture variants exist for local analytics states:
 dist/QuotaPulse.app/Contents/MacOS/QuotaPulse --visual-qa-fixture-codex-analytics-only /tmp/quota-pulse-codex-analytics-only.png
 dist/QuotaPulse.app/Contents/MacOS/QuotaPulse --visual-qa-fixture-claude-analytics-error /tmp/quota-pulse-claude-analytics-error.png
 dist/QuotaPulse.app/Contents/MacOS/QuotaPulse --visual-qa-fixture-no-analytics /tmp/quota-pulse-no-analytics.png
+dist/QuotaPulse.app/Contents/MacOS/QuotaPulse --visual-qa-fixture-claude-auth-blocked /tmp/quota-pulse-claude-auth-blocked.png
+dist/QuotaPulse.app/Contents/MacOS/QuotaPulse --visual-qa-fixture-claude-auth-unavailable /tmp/quota-pulse-claude-auth-unavailable.png
 ```
 
 ## Script Checks
@@ -97,7 +99,9 @@ Do not commit local signing identity names. Official releases should use Develop
 
 ## Launcher Defaults
 
-`Scripts/run_practical.sh` and `Scripts/install_open_at_login.sh` are intentionally no-Keychain/no-prompt/no-CLI by default for public builds. This avoids unattended macOS Keychain prompts. Use `Scripts/run_practical_keychain_prompt.sh` only for attended local launches where the user can approve a Keychain prompt.
+`Scripts/run_practical.sh` and `Scripts/install_open_at_login.sh` are intentionally no-Keychain/no-prompt/no-CLI by default for public builds. This avoids unattended macOS Keychain prompts. Use `Scripts/run_practical_keychain_prompt.sh` only for attended local launches where the user can approve a Keychain prompt, then click `Fix Claude Login...` in the dashboard.
+
+Claude CLI fallback requires the explicit fallback launcher. The app checks both `QUOTA_PULSE_ENABLE_CLAUDE_CLI=1` and the launcher-side `QUOTA_PULSE_LAUNCHER_ENABLE_CLAUDE_CLI=1` flag so generic shell environment leakage does not silently enable the fallback path.
 
 Do not run `Scripts/install_open_at_login.sh` on a machine that already uses a private/runtime QuotaPulse app unless the owner explicitly wants the public repo login item installed too.
 

@@ -250,6 +250,10 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
         self.isStale && self.hasAuthFailureError
     }
 
+    public var isAuthBlocked: Bool {
+        self.hasAuthFailureError && (self.isStale || self.source == .error || self.errorMessage != nil)
+    }
+
     public var hasRateLimitError: Bool {
         guard let errorMessage else { return false }
         return Self.isRateLimitMessage(errorMessage)
@@ -340,13 +344,14 @@ public enum UsageDisplayFormatter {
     public struct ProviderLine: Equatable, Sendable {
         public let provider: ProviderKind
         public let value: String
+        public let accessibilityValue: String
 
         public var compactText: String {
             "\(self.provider.compactName) \(self.value)"
         }
 
         public var accessibilityText: String {
-            "\(self.provider.displayName) \(self.value)"
+            "\(self.provider.displayName) \(self.accessibilityValue)"
         }
     }
 
@@ -382,9 +387,16 @@ public enum UsageDisplayFormatter {
             .claude: claude,
         ]
         return ProviderKind.normalizedOrder(providerOrder).map { provider in
-            ProviderLine(
+            let snapshot = snapshots[provider] ?? UsageSnapshot.error("Unavailable")
+            let value = Self.menuBarValue(snapshot, now: now)
+            return ProviderLine(
                 provider: provider,
-                value: Self.menuBarValue(snapshots[provider] ?? UsageSnapshot.error("Unavailable"), now: now))
+                value: value,
+                accessibilityValue: Self.menuBarAccessibilityValue(
+                    provider: provider,
+                    snapshot: snapshot,
+                    value: value,
+                    now: now))
         }
     }
 
@@ -436,6 +448,9 @@ public enum UsageDisplayFormatter {
             {
                 return "\(Int(value.rounded()))!"
             }
+            if snapshot.hasAuthFailureError {
+                return "--!"
+            }
             if snapshot.errorMessage != nil {
                 return "ERR"
             }
@@ -444,10 +459,51 @@ public enum UsageDisplayFormatter {
         if let value = snapshot.sessionPercentRemaining {
             return "\(Int(value.rounded()))%"
         }
+        if snapshot.hasAuthFailureError {
+            return "--!"
+        }
         if snapshot.errorMessage != nil {
             return "ERR"
         }
         return "--"
+    }
+
+    private static func menuBarAccessibilityValue(
+        provider: ProviderKind,
+        snapshot: UsageSnapshot,
+        value: String,
+        now: Date = Date())
+        -> String
+    {
+        if provider == .claude {
+            if snapshot.hasStaleAuthFailure,
+               let percent = snapshot.sessionPercentRemaining,
+               snapshot.hasUsableCachedSessionPercent(now: now)
+            {
+                return "\(Int(percent.rounded()))% cached quota, login repair needed"
+            }
+            if snapshot.hasAuthFailureError {
+                return "login needed; open dashboard"
+            }
+            if snapshot.source == .disabled || Self.isSafeStartupUnavailable(snapshot.errorMessage) {
+                return "safe startup; Claude login not checked"
+            }
+        }
+        if snapshot.isStale, let percent = snapshot.sessionPercentRemaining {
+            return "\(Int(percent.rounded()))% cached quota"
+        }
+        if value == "ERR" { return "unavailable" }
+        if value == "--" { return "unavailable" }
+        if value == "--!" { return "login needed; open dashboard" }
+        return value
+    }
+
+    private static func isSafeStartupUnavailable(_ message: String?) -> Bool {
+        guard let message else { return false }
+        let lowercased = message.lowercased()
+        return lowercased.contains("credential")
+            || lowercased.contains("cli fallback is disabled")
+            || lowercased.contains("live reads disabled")
     }
 }
 

@@ -13,13 +13,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var providerOrderStore: ProviderOrderStore?
     private var statusItemController: StatusItemController?
     private var notchPillController: NotchPillController?
+    private let claudePromptGate = ClaudeOAuthPromptGate()
     private var presenceMonitor: UserPresenceMonitor?
     private var screenObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         ProcessInfo.processInfo.disableAutomaticTermination(self.automaticTerminationReason)
 
-        let providers = Self.makeProviders()
+        let providers = Self.makeProviders(claudePromptGate: self.claudePromptGate)
         let codexStore = UsageStore(provider: providers.codex)
         let claudeStore = UsageStore(
             provider: providers.claude,
@@ -49,7 +50,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             codexAnalyticsStore: codexAnalyticsStore,
             claudeAnalyticsStore: claudeAnalyticsStore,
             analyticsScheduler: analyticsScheduler,
-            providerOrderStore: providerOrderStore)
+            providerOrderStore: providerOrderStore,
+            onRepairClaudeLogin: { [weak self, weak scheduler] in
+                self?.claudePromptGate.allowNextPrompt()
+                scheduler?.repairClaudeLogin()
+            })
         self.presenceMonitor = UserPresenceMonitor { [weak scheduler] state in
             scheduler?.updatePresence(state)
         }
@@ -91,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private static func makeProviders() -> (codex: any CodexUsageProviding, claude: any CodexUsageProviding) {
+    private static func makeProviders(claudePromptGate: ClaudeOAuthPromptGate? = nil) -> (codex: any CodexUsageProviding, claude: any CodexUsageProviding) {
         let env = ProcessInfo.processInfo.environment
         let args = ProcessInfo.processInfo.arguments
         let fixtureValue = QuotaPulseEnvironment.value("QUOTA_PULSE_FIXTURE", in: env)
@@ -113,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let mode = FixtureClaudeUsageProvider.Mode(rawValue: claudeFixtureValue) ?? .success
             claudeProvider = FixtureClaudeUsageProvider(mode: mode)
         } else {
-            claudeProvider = Self.makeClaudeProvider(env: env)
+            claudeProvider = Self.makeClaudeProvider(env: env, promptGate: claudePromptGate)
         }
 
         return (CascadingCodexUsageProvider(providers: [
@@ -123,8 +128,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ]), claudeProvider)
     }
 
-    private static func makeClaudeProvider(env: [String: String]) -> any CodexUsageProviding {
+    private static func makeClaudeProvider(env: [String: String], promptGate: ClaudeOAuthPromptGate?) -> any CodexUsageProviding {
         let cliFallbackEnabled = QuotaPulseEnvironment.isEnabled("QUOTA_PULSE_ENABLE_CLAUDE_CLI", in: env)
+            && QuotaPulseEnvironment.isEnabled("QUOTA_PULSE_LAUNCHER_ENABLE_CLAUDE_CLI", in: env)
         if QuotaPulseEnvironment.isEnabled("QUOTA_PULSE_DISABLE_CLAUDE_OAUTH", in: env) {
             if cliFallbackEnabled {
                 return ClaudeCLIUsageProvider(env: env)
@@ -134,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let credentialsResult: Result<ClaudeOAuthCredentialRecord, Error> = Result {
-            try ClaudeOAuthCredentialsStore.loadRecord(env: env)
+            try ClaudeOAuthCredentialsStore.loadRecord(env: env, allowUserPromptOverride: false)
         }
         let credentialRecord = try? credentialsResult.get()
         let credentials = credentialRecord?.credentials
@@ -159,16 +165,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for source in plan.orderedSources {
             switch source {
             case .oauth:
-                guard let credentialRecord else { continue }
                 providers.append(
                     ReloadingClaudeOAuthUsageProvider(
                         initialRecord: credentialRecord,
                         env: env,
                         httpClient: URLSessionUsageHTTPClient(),
-                        credentialResolver: ClaudeOAuthCredentialsStoreResolver()))
+                        credentialResolver: ClaudeOAuthCredentialsStoreResolver(promptGate: promptGate)))
             case .cli:
                 providers.append(ClaudeCLIUsageProvider(env: env))
             case .disabled:
+                providers.append(
+                    ReloadingClaudeOAuthUsageProvider(
+                        initialRecord: nil,
+                        env: env,
+                        httpClient: URLSessionUsageHTTPClient(),
+                        credentialResolver: ClaudeOAuthCredentialsStoreResolver(promptGate: promptGate)))
                 providers.append(DisabledClaudeUsageProvider())
             case .failure:
                 providers.append(ImmediateFailureUsageProvider(
@@ -180,7 +191,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return provider
         }
         if providers.isEmpty {
-            return DisabledClaudeUsageProvider()
+            return CascadingCodexUsageProvider(providers: [
+                ReloadingClaudeOAuthUsageProvider(
+                    initialRecord: nil,
+                    env: env,
+                    httpClient: URLSessionUsageHTTPClient(),
+                    credentialResolver: ClaudeOAuthCredentialsStoreResolver(promptGate: promptGate)),
+                DisabledClaudeUsageProvider(),
+            ])
         }
         return CascadingCodexUsageProvider(providers: providers)
     }

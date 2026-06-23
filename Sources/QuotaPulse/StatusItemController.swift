@@ -12,6 +12,7 @@ final class StatusItemController: NSObject {
     private let claudeAnalyticsStore: LocalUsageAnalyticsStore
     private let analyticsScheduler: LocalUsageAnalyticsScheduler
     private let providerOrderStore: ProviderOrderStore
+    private let onRepairClaudeLogin: () -> Void
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var panel: StatusPanel?
     private let menuBarView = MenuBarMeterView()
@@ -28,6 +29,8 @@ final class StatusItemController: NSObject {
     private var currentPanelMaxHeight = HoverPanelView.preferredContentSize.height
     private var lastValidStatusFrame: CGRect?
     private var hoverPollTimer: Timer?
+    private var repositionWorkItem: DispatchWorkItem?
+    private var latestStatusToolTip = ""
 
     init(
         codexStore: UsageStore,
@@ -36,7 +39,8 @@ final class StatusItemController: NSObject {
         codexAnalyticsStore: LocalUsageAnalyticsStore,
         claudeAnalyticsStore: LocalUsageAnalyticsStore,
         analyticsScheduler: LocalUsageAnalyticsScheduler,
-        providerOrderStore: ProviderOrderStore)
+        providerOrderStore: ProviderOrderStore,
+        onRepairClaudeLogin: @escaping () -> Void = {})
     {
         self.codexStore = codexStore
         self.claudeStore = claudeStore
@@ -45,6 +49,7 @@ final class StatusItemController: NSObject {
         self.claudeAnalyticsStore = claudeAnalyticsStore
         self.analyticsScheduler = analyticsScheduler
         self.providerOrderStore = providerOrderStore
+        self.onRepairClaudeLogin = onRepairClaudeLogin
         self.latestCodexSnapshot = codexStore.snapshot
         self.latestClaudeSnapshot = claudeStore.snapshot
         self.displayMode = NSStatusBar.system.thickness >= 22 ? .twoLineCustom : .compactTitle
@@ -154,7 +159,8 @@ final class StatusItemController: NSObject {
             self.statusItem.button?.title = compactText
             self.redrawMenuBarButton()
         }
-        self.statusItem.button?.toolTip = nil
+        self.latestStatusToolTip = accessibilityText
+        self.statusItem.button?.toolTip = self.panel?.isVisible == true ? nil : accessibilityText
         self.statusItem.button?.setAccessibilityLabel(accessibilityText)
     }
 
@@ -182,6 +188,9 @@ final class StatusItemController: NSObject {
                 self?.scheduler.refreshNow()
                 self?.analyticsScheduler.refreshNow()
             },
+            onRepairClaudeLogin: { [weak self] in
+                self?.onRepairClaudeLogin()
+            },
             onTogglePin: { [weak self] in self?.togglePinned() },
             onQuit: { NSApp.terminate(nil) },
             onPreferredSizeChange: { [weak self] preferredSize in
@@ -208,10 +217,8 @@ final class StatusItemController: NSObject {
         self.panel?.contentViewController?.preferredContentSize = preferredSize
         guard let panel = self.panel else { return }
         if panel.isVisible {
-            let frame = self.visiblePanelFramePreservingTopEdge(
-                currentFrame: panel.frame,
-                preferredSize: preferredSize)
-            panel.setFrame(frame, display: true)
+            self.repositionVisiblePanel(preferredSize: preferredSize)
+            self.scheduleVisiblePanelReposition(preferredSize: preferredSize)
         } else {
             panel.setContentSize(preferredSize)
         }
@@ -285,8 +292,10 @@ final class StatusItemController: NSObject {
         self.scheduler.setDashboardVisible(true)
         self.currentPanelMaxHeight = self.maxPanelHeight(relativeTo: button)
         self.refreshPopoverContent()
+        self.statusItem.button?.toolTip = nil
         self.positionPanel(relativeTo: button)
         self.panel?.orderFrontRegardless()
+        self.scheduleVisiblePanelReposition()
     }
 
     private func positionPanel(relativeTo button: NSStatusBarButton, preferredSize: CGSize? = nil) {
@@ -316,6 +325,17 @@ final class StatusItemController: NSObject {
         else { return }
         self.currentPanelMaxHeight = self.maxPanelHeight(relativeTo: button)
         self.positionPanel(relativeTo: button, preferredSize: preferredSize)
+    }
+
+    private func scheduleVisiblePanelReposition(preferredSize: CGSize? = nil) {
+        self.repositionWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                self?.repositionVisiblePanel(preferredSize: preferredSize ?? self?.currentPanelSize)
+            }
+        }
+        self.repositionWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: item)
     }
 
     private func statusFrame(relativeTo button: NSStatusBarButton) -> CGRect? {
@@ -424,6 +444,7 @@ final class StatusItemController: NSObject {
             else { return }
             self.panel?.orderOut(nil)
             self.scheduler.setDashboardVisible(false)
+            self.statusItem.button?.toolTip = self.latestStatusToolTip
         }
         self.closeWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: item)

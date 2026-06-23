@@ -21,9 +21,11 @@ QuotaPulse is a Swift Package with three targets.
 
 ## Smart Refresh
 
-`RefreshScheduler` owns per-provider refresh state for Codex and Claude. Each provider can use its own mode, next refresh time, cooldown, pause reason, and refresh status.
+`RefreshScheduler` owns per-provider refresh state for Codex and Claude. Each provider can use its own mode, next refresh time, cooldown, pause reason, auth-blocked reason, and refresh status.
 
-Auto mode can adapt to dashboard visibility, unchanged successful reads, user presence, wake events, and Claude OAuth cooldowns. Jitter is applied to scheduled refreshes to avoid fixed polling cadence.
+Auto mode can adapt to dashboard visibility, unchanged successful reads, user presence, wake events, Claude OAuth cooldowns, and Claude login repair state. Jitter is applied to scheduled refreshes to avoid fixed polling cadence.
+
+If Claude OAuth returns unauthorized or login-expired, the scheduler records Claude as auth-blocked, clears the next Claude automatic refresh, and leaves Codex refresh independent. A manual repair action can clear that state and trigger one Claude refresh attempt.
 
 `UserPresenceMonitor` observes coarse macOS local presence signals and reports them to the scheduler. It does not send presence data anywhere.
 
@@ -43,7 +45,7 @@ Changing provider order is display-only. It does not trigger a provider refresh,
 
 Codex usage can be read through local OAuth credentials or local CLI/RPC fallback behavior already implemented in the core provider layer.
 
-Claude usage prefers OAuth-compatible local credential sources. Claude Code Keychain discovery is explicit opt-in. Claude CLI fallback is also explicit opt-in and is kept separate because it can update local Claude CLI state.
+Claude usage prefers OAuth-compatible local credential sources. Claude Code Keychain discovery is explicit opt-in. Claude login repair uses `ClaudeOAuthPromptGate` to permit one attended Keychain-backed credential read after the dashboard `Fix Claude Login...` action. Claude CLI fallback is also explicit opt-in and is kept separate because it can update local Claude CLI state.
 
 ## Local Analytics
 

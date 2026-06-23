@@ -151,6 +151,7 @@ public struct ProviderRefreshState: Equatable, Sendable {
     public var isRefreshing: Bool
     public var nextRefreshAt: Date?
     public var cooldownUntil: Date?
+    public var authBlockedReason: String?
     public var pausedReason: UserPresenceState?
     public var lastStatusText: String
     public var unchangedSuccesses: Int
@@ -161,6 +162,7 @@ public struct ProviderRefreshState: Equatable, Sendable {
         isRefreshing: Bool = false,
         nextRefreshAt: Date? = nil,
         cooldownUntil: Date? = nil,
+        authBlockedReason: String? = nil,
         pausedReason: UserPresenceState? = nil,
         lastStatusText: String = "Ready",
         unchangedSuccesses: Int = 0)
@@ -170,6 +172,7 @@ public struct ProviderRefreshState: Equatable, Sendable {
         self.isRefreshing = isRefreshing
         self.nextRefreshAt = nextRefreshAt
         self.cooldownUntil = cooldownUntil
+        self.authBlockedReason = authBlockedReason.map(UsageSnapshot.sanitized)
         self.pausedReason = pausedReason
         self.lastStatusText = lastStatusText
         self.unchangedSuccesses = unchangedSuccesses
@@ -380,6 +383,26 @@ public final class RefreshScheduler: ObservableObject {
         }
     }
 
+    public func repairClaudeLogin() {
+        self.updateState(for: .claude) { state in
+            state.authBlockedReason = nil
+            state.cooldownUntil = nil
+            state.nextRefreshAt = nil
+            state.lastStatusText = "Repairing Claude login..."
+        }
+        self.refresh(provider: .claude, manual: true)
+    }
+
+    public func markClaudeAuthBlockedForTesting(reason: String = UsageSnapshot.claudeLoginExpiredMessage) {
+        self.updateState(for: .claude) { state in
+            state.isRefreshing = false
+            state.authBlockedReason = reason
+            state.cooldownUntil = nil
+            state.nextRefreshAt = nil
+            state.lastStatusText = "Claude login needs repair"
+        }
+    }
+
     public func refresh(provider: ProviderKind, manual: Bool) {
         guard let store = self.stores[provider] else { return }
         let state = self.state(for: provider)
@@ -404,6 +427,17 @@ public final class RefreshScheduler: ObservableObject {
             self.updateState(for: provider) { state in
                 state.nextRefreshAt = nil
                 state.lastStatusText = "Manual mode"
+            }
+            return
+        }
+        if provider == .claude,
+           state.authBlockedReason != nil,
+           !manual
+        {
+            self.updateState(for: provider) { state in
+                state.nextRefreshAt = nil
+                state.cooldownUntil = nil
+                state.lastStatusText = "Claude login needs repair"
             }
             return
         }
@@ -447,6 +481,9 @@ public final class RefreshScheduler: ObservableObject {
         if let paused = self.presence.pausedText {
             return paused
         }
+        if self.claudeState.authBlockedReason != nil {
+            return "Claude login needs repair; Codex keeps refreshing."
+        }
         if let cooldown = self.claudeState.cooldownUntil,
            cooldown > now
         {
@@ -462,6 +499,7 @@ public final class RefreshScheduler: ObservableObject {
     public func nextText(for provider: ProviderKind, now: Date) -> String {
         let state = self.state(for: provider)
         if state.isRefreshing { return "now" }
+        if state.authBlockedReason != nil { return "Login" }
         if state.mode == .manual { return "Manual" }
         guard let nextRefreshAt = state.nextRefreshAt else { return "soon" }
         return Self.refreshCountdown(to: nextRefreshAt, now: now)
@@ -504,14 +542,21 @@ public final class RefreshScheduler: ObservableObject {
         if provider == .claude, retryAt != nil {
             self.fastModeUntil[provider] = nil
         }
+        let authBlockedReason = provider == .claude && snapshot.isAuthBlocked
+            ? UsageSnapshot.claudeLoginExpiredMessage
+            : nil
 
         self.updateState(for: provider) { state in
             state.isRefreshing = false
-            state.cooldownUntil = retryAt
+            state.authBlockedReason = authBlockedReason
+            state.cooldownUntil = authBlockedReason == nil ? retryAt : nil
+            state.nextRefreshAt = authBlockedReason == nil ? state.nextRefreshAt : nil
             state.unchangedSuccesses = (!snapshot.isStale && snapshot.errorMessage == nil)
                 ? (changed ? 0 : state.unchangedSuccesses + 1)
                 : state.unchangedSuccesses
-            if let retryAt, retryAt > self.now() {
+            if authBlockedReason != nil {
+                state.lastStatusText = "Claude login needs repair"
+            } else if let retryAt, retryAt > self.now() {
                 state.lastStatusText = "Claude cooldown: retry in \(Self.refreshCountdown(to: retryAt, now: self.now()))"
             } else if snapshot.isStale {
                 state.lastStatusText = snapshot.errorMessage ?? "Stale"
@@ -552,6 +597,16 @@ public final class RefreshScheduler: ObservableObject {
             return
         }
         state.pausedReason = nil
+
+        if provider == .claude,
+           state.authBlockedReason != nil
+        {
+            state.nextRefreshAt = nil
+            state.cooldownUntil = nil
+            state.lastStatusText = "Claude login needs repair"
+            self.setState(state, for: provider)
+            return
+        }
 
         if provider == .claude,
            let cooldownUntil = state.cooldownUntil,

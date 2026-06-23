@@ -85,11 +85,44 @@ public protocol ClaudeOAuthCredentialResolving: Sendable {
     func loadRecord(env: [String: String]) throws -> ClaudeOAuthCredentialRecord
 }
 
-public struct ClaudeOAuthCredentialsStoreResolver: ClaudeOAuthCredentialResolving {
+public final class ClaudeOAuthPromptGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextPromptAllowed = false
+
     public init() {}
 
+    public func allowNextPrompt() {
+        self.lock.lock()
+        self.nextPromptAllowed = true
+        self.lock.unlock()
+    }
+
+    public func consumeNextPromptAllowance() -> Bool {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        let allowed = self.nextPromptAllowed
+        self.nextPromptAllowed = false
+        return allowed
+    }
+}
+
+public struct ClaudeOAuthCredentialsStoreResolver: ClaudeOAuthCredentialResolving {
+    private let promptGate: ClaudeOAuthPromptGate?
+
+    public init(promptGate: ClaudeOAuthPromptGate? = nil) {
+        self.promptGate = promptGate
+    }
+
     public func loadRecord(env: [String: String]) throws -> ClaudeOAuthCredentialRecord {
-        try ClaudeOAuthCredentialsStore.loadRecord(env: env)
+        let allowPrompt = self.promptGate?.consumeNextPromptAllowance() ?? false
+        var resolvedEnv = env
+        if allowPrompt {
+            resolvedEnv["QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN"] = "1"
+            resolvedEnv["QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT"] = "1"
+        }
+        return try ClaudeOAuthCredentialsStore.loadRecord(
+            env: resolvedEnv,
+            allowUserPromptOverride: allowPrompt)
     }
 }
 
@@ -136,7 +169,8 @@ public enum ClaudeOAuthCredentialsStore {
 
     public static func loadRecord(
         env: [String: String] = ProcessInfo.processInfo.environment,
-        keychainReader: any ClaudeOAuthKeychainReading = ClaudeCodeKeychainCredentialReader())
+        keychainReader: any ClaudeOAuthKeychainReading = ClaudeCodeKeychainCredentialReader(),
+        allowUserPromptOverride: Bool? = nil)
         throws -> ClaudeOAuthCredentialRecord
     {
         let url = self.credentialsFileURL(env: env)
@@ -165,7 +199,7 @@ public enum ClaudeOAuthCredentialsStore {
             throw ClaudeUsageProviderError.missingCredentials
         }
 
-        let allowUserPrompt = self.isKeychainPromptAllowed(env: env)
+        let allowUserPrompt = allowUserPromptOverride ?? self.isKeychainPromptAllowed(env: env)
         guard let keychainData = try keychainReader.readClaudeOAuthCredentialData(allowUserPrompt: allowUserPrompt),
               !keychainData.isEmpty
         else {

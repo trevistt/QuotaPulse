@@ -12,6 +12,7 @@ struct HoverPanelView: View {
     let isPinned: Bool
     let maxPanelHeight: CGFloat
     let onRefresh: () -> Void
+    let onRepairClaudeLogin: () -> Void
     let onTogglePin: () -> Void
     let onQuit: () -> Void
     let onPreferredSizeChange: (CGSize) -> Void
@@ -38,6 +39,7 @@ struct HoverPanelView: View {
         maxPanelHeight: CGFloat = DashboardLayout.defaultMaxPanelHeight,
         initialTab: DashboardTab = .overview,
         onRefresh: @escaping () -> Void,
+        onRepairClaudeLogin: @escaping () -> Void = {},
         onTogglePin: @escaping () -> Void,
         onQuit: @escaping () -> Void,
         onPreferredSizeChange: @escaping (CGSize) -> Void = { _ in })
@@ -51,6 +53,7 @@ struct HoverPanelView: View {
         self.isPinned = isPinned
         self.maxPanelHeight = maxPanelHeight
         self.onRefresh = onRefresh
+        self.onRepairClaudeLogin = onRepairClaudeLogin
         self.onTogglePin = onTogglePin
         self.onQuit = onQuit
         self.onPreferredSizeChange = onPreferredSizeChange
@@ -99,6 +102,10 @@ struct HoverPanelView: View {
         -> String
     {
         self.providerStatusText(provider: provider, state: state, now: now)
+    }
+
+    static func showsClaudeRepairActionForTesting(provider: ProviderKind, snapshot: UsageSnapshot) -> Bool {
+        self.shouldShowClaudeRepairAction(provider: provider, snapshot: snapshot)
     }
 
     var body: some View {
@@ -305,10 +312,10 @@ struct HoverPanelView: View {
                         .foregroundStyle(.white.opacity(0.48))
                 }
                 Spacer(minLength: 8)
-                Text(snapshot.primaryDisplayText)
+                Text(Self.primaryDisplayText(snapshot: snapshot, now: self.countdownNow))
                     .font(.system(size: 22, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(snapshot.errorMessage == nil ? .white : Color.red.opacity(0.92))
+                    .foregroundStyle(Self.primaryDisplayColor(snapshot: snapshot, now: self.countdownNow))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
@@ -330,6 +337,10 @@ struct HoverPanelView: View {
 
             if snapshot.isStale || snapshot.errorMessage != nil {
                 compactStateMessage(provider: provider, snapshot: snapshot)
+            }
+
+            if Self.shouldShowClaudeRepairAction(provider: provider, snapshot: snapshot) {
+                claudeRepairAction(compact: true)
             }
         }
         .padding(9)
@@ -481,10 +492,10 @@ struct HoverPanelView: View {
                         .foregroundStyle(.white.opacity(0.48))
                 }
                 Spacer(minLength: 8)
-                Text(snapshot.primaryDisplayText)
+                Text(Self.primaryDisplayText(snapshot: snapshot, now: self.countdownNow))
                     .font(.system(size: 22, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(snapshot.errorMessage == nil ? .white : Color.red.opacity(0.92))
+                    .foregroundStyle(Self.primaryDisplayColor(snapshot: snapshot, now: self.countdownNow))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
@@ -519,6 +530,10 @@ struct HoverPanelView: View {
 
             if snapshot.isStale || snapshot.errorMessage != nil {
                 stateMessage(provider: provider, snapshot: snapshot)
+            }
+
+            if Self.shouldShowClaudeRepairAction(provider: provider, snapshot: snapshot) {
+                claudeRepairAction(compact: false)
             }
 
             analyticsSummarySection(provider: provider, snapshot: analytics, accent: accent, compact: false)
@@ -813,19 +828,19 @@ struct HoverPanelView: View {
         let message = Self.stateMessageText(provider: provider, snapshot: snapshot)
         return Text(message)
             .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(snapshot.errorMessage == nil ? Color.orange.opacity(0.92) : Color.red.opacity(0.9))
-            .lineLimit(3)
+            .foregroundStyle(Self.stateMessageColor(snapshot: snapshot))
+            .lineLimit(5)
             .fixedSize(horizontal: false, vertical: true)
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.white.opacity(0.06)))
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.white.opacity(0.06)))
     }
 
     private func compactStateMessage(provider: ProviderKind, snapshot: UsageSnapshot) -> some View {
         HStack(spacing: 5) {
-            Image(systemName: snapshot.hasRateLimitError ? "clock" : "exclamationmark.triangle")
+            Image(systemName: snapshot.hasRateLimitError ? "clock" : (snapshot.hasAuthFailureError ? "person.crop.circle.badge.exclamationmark" : "exclamationmark.triangle"))
                 .font(.system(size: 8.5, weight: .semibold))
             Text(Self.compactStateMessageText(provider: provider, snapshot: snapshot))
                 .font(.system(size: 9.5, weight: .medium))
@@ -846,12 +861,15 @@ struct HoverPanelView: View {
             return "Cached value; wait for cooldown."
         }
         if provider == .claude, snapshot.hasStaleAuthFailure {
-            return "Login expired; open Claude Code."
+            if snapshot.sessionPercentRemaining != nil {
+                return "Login needs repair; showing cached quota."
+            }
+            return "Login needs repair."
         }
         if provider == .claude,
            snapshot.source == .disabled || UsageDiagnosticsFormatter.errorCategory(snapshot.errorMessage) == "Credentials unavailable"
         {
-            return "OAuth unavailable; use attended Keychain launcher."
+            return "Safe startup: Claude login not checked."
         }
         if snapshot.isStale {
             return "! means cached value."
@@ -861,12 +879,15 @@ struct HoverPanelView: View {
 
     private static func stateMessageText(provider: ProviderKind, snapshot: UsageSnapshot) -> String {
         if provider == .claude, snapshot.hasStaleAuthFailure {
-            return "\(UsageSnapshot.claudeLoginExpiredMessage) If QuotaPulse still cannot read Claude, run the attended Keychain launcher while present."
+            let firstLine = snapshot.sessionPercentRemaining == nil
+                ? "Claude login needs repair. Quota is unavailable until repaired."
+                : "Claude login needs repair. Showing last good quota."
+            return "\(firstLine)\nClick Fix Claude Login while you are at this Mac.\nIf it stays blocked: open Claude Code, run /logout, then /login, return here, and press Refresh."
         }
         if provider == .claude,
            snapshot.source == .disabled || UsageDiagnosticsFormatter.errorCategory(snapshot.errorMessage) == "Credentials unavailable"
         {
-            return "Claude OAuth is unavailable in no-Keychain daily mode. Run the attended Keychain launcher only while present, then press Refresh. Claude CLI remains off."
+            return "Safe startup did not check Claude login. Click Fix Claude Login only while you are at this Mac. Claude CLI remains off."
         }
         let message = snapshot.errorMessage ?? "Usage is stale; showing the last good reading."
         if snapshot.isStale,
@@ -876,6 +897,68 @@ struct HoverPanelView: View {
             return "\(message) ! means stale cached value."
         }
         return message
+    }
+
+    private static func stateMessageColor(snapshot: UsageSnapshot) -> Color {
+        if snapshot.hasAuthFailureError || snapshot.hasRateLimitError || snapshot.isStale {
+            return Color.orange.opacity(0.92)
+        }
+        return snapshot.errorMessage == nil ? Color.orange.opacity(0.92) : Color.red.opacity(0.9)
+    }
+
+    private static func shouldShowClaudeRepairAction(provider: ProviderKind, snapshot: UsageSnapshot) -> Bool {
+        guard provider == .claude else { return false }
+        return snapshot.hasAuthFailureError
+            || snapshot.source == .disabled
+            || UsageDiagnosticsFormatter.errorCategory(snapshot.errorMessage) == "Credentials unavailable"
+    }
+
+    private func claudeRepairAction(compact: Bool) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "person.crop.circle.badge.exclamationmark")
+                .font(.system(size: compact ? 9 : 11, weight: .semibold))
+                .foregroundStyle(Color.orange.opacity(0.95))
+                .frame(width: compact ? 12 : 15)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Attended only. This may show a macOS Keychain prompt.")
+                    .font(.system(size: compact ? 8.8 : 9.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.68))
+                    .lineLimit(compact ? 1 : 2)
+                    .minimumScaleFactor(0.76)
+                if !compact {
+                    Text("If repair still fails: open Claude Code, run /logout, then /login, return here, and press Refresh.")
+                        .font(.system(size: 8.8, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.48))
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 4)
+            Button {
+                self.onRepairClaudeLogin()
+            } label: {
+                Label("Fix Claude Login...", systemImage: "wrench.and.screwdriver")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: compact ? 9 : 10, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                Capsule()
+                    .fill(Color.orange.opacity(0.18))
+                    .overlay(Capsule().stroke(Color.orange.opacity(0.35), lineWidth: 0.75)))
+            .foregroundStyle(Color.orange.opacity(0.96))
+            .accessibilityLabel("Fix Claude Login")
+            .accessibilityHint("Only use while you are at this Mac. This may show a macOS Keychain prompt.")
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.orange.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.orange.opacity(0.20), lineWidth: 0.75)))
     }
 
     private var diagnosticsSection: some View {
@@ -947,7 +1030,10 @@ struct HoverPanelView: View {
                     value: UsageDiagnosticsFormatter.lastSuccessfulText(state.lastSuccessfulRefreshAt, now: self.countdownNow))
                 diagnosticPair(
                     title: "Last error",
-                    value: UsageDiagnosticsFormatter.errorCategory(state.lastErrorMessage ?? state.snapshot.errorMessage))
+                    value: UsageDiagnosticsFormatter.errorCategory(
+                        provider: state.provider,
+                        snapshot: state.snapshot,
+                        lastErrorMessage: state.lastErrorMessage))
                 diagnosticPair(
                     title: "Refresh",
                     value: "\(state.refreshState.mode.label) · \(UsageDiagnosticsFormatter.refreshText(state: state.refreshState, now: self.countdownNow))")
@@ -1212,6 +1298,9 @@ struct HoverPanelView: View {
         if let paused = state.pausedReason?.pausedText {
             return paused.replacingOccurrences(of: "Paused: ", with: "Paused ")
         }
+        if state.authBlockedReason != nil {
+            return "Login repair needed"
+        }
         if provider == .claude,
            let cooldown = state.cooldownUntil,
            cooldown > now
@@ -1248,6 +1337,36 @@ struct HoverPanelView: View {
         case .onTarget:
             .white.opacity(0.62)
         }
+    }
+
+    private static func primaryDisplayText(snapshot: UsageSnapshot, now: Date) -> String {
+        if snapshot.hasStaleAuthFailure,
+           let value = snapshot.sessionPercentRemaining,
+           snapshot.hasUsableCachedSessionPercent(now: now)
+        {
+            return "\(Int(value.rounded()))% cached"
+        }
+        if snapshot.hasAuthFailureError,
+           snapshot.sessionPercentRemaining == nil
+        {
+            return "Login needed"
+        }
+        return snapshot.primaryDisplayText
+    }
+
+    private static func primaryDisplayColor(snapshot: UsageSnapshot, now: Date) -> Color {
+        if snapshot.hasStaleAuthFailure,
+           snapshot.hasUsableCachedSessionPercent(now: now)
+        {
+            return Color.orange.opacity(0.95)
+        }
+        if snapshot.errorMessage == nil {
+            return .white
+        }
+        if snapshot.hasAuthFailureError {
+            return Color.orange.opacity(0.95)
+        }
+        return Color.red.opacity(0.92)
     }
 
     private static func percentText(_ value: Double?) -> String {

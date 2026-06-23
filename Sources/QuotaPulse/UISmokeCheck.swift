@@ -253,11 +253,19 @@ enum UISmokeCheck {
             print("UI smoke failed: stale auth menu bar should mark old Claude percentage stale, got \(values)")
             return false
         }
+        guard controller.visibleToolTipForTesting()?.contains("Claude 89% cached quota, login repair needed") == true else {
+            print("UI smoke failed: stale auth tooltip should explain cached login repair state")
+            return false
+        }
         let message = HoverPanelView.stateMessageTextForTesting(provider: .claude, snapshot: claudeStore.snapshot)
-        guard message.contains(UsageSnapshot.claudeLoginExpiredMessage),
-              message.contains("attended Keychain launcher while present")
+        guard message.contains("Claude login needs repair"),
+              message.contains("Fix Claude Login")
         else {
             print("UI smoke failed: dashboard stale auth message was not clear, got `\(message)`")
+            return false
+        }
+        guard HoverPanelView.showsClaudeRepairActionForTesting(provider: .claude, snapshot: claudeStore.snapshot) else {
+            print("UI smoke failed: Claude auth-blocked state should show repair action")
             return false
         }
 
@@ -284,9 +292,13 @@ enum UISmokeCheck {
             analyticsScheduler: expiredAnalytics.scheduler,
             providerOrderStore: self.makeProviderOrderStore("expired"))
         expiredClaudeStore.replaceSnapshotForTesting(expiredClaudeStore.snapshot.markedStale(errorMessage: "OAuth unauthorized; run Claude to refresh login."))
-        guard self.waitForMenuBarValues(expiredController, codex: "63%", claude: "ERR") else {
+        guard self.waitForMenuBarValues(expiredController, codex: "63%", claude: "--!") else {
             let values = expiredController.menuBarValuesForTesting()
-            print("UI smoke failed: expired stale Claude value should render ERR, got \(values)")
+            print("UI smoke failed: expired stale Claude auth value should render --!, got \(values)")
+            return false
+        }
+        guard expiredController.visibleToolTipForTesting()?.contains("Claude login needed; open dashboard") == true else {
+            print("UI smoke failed: expired stale Claude tooltip should explain login-needed state")
             return false
         }
         return true
@@ -342,8 +354,8 @@ enum UISmokeCheck {
             print("UI smoke failed: synced menu bar width exceeded 48pt")
             return false
         }
-        guard controller.visibleToolTipForTesting() == nil else {
-            print("UI smoke failed: sync path restored visible tooltip")
+        guard controller.visibleToolTipForTesting()?.contains("Codex 44%, Claude 92%") == true else {
+            print("UI smoke failed: sync path did not publish semantic tooltip")
             return false
         }
         return true
@@ -358,7 +370,7 @@ enum UISmokeCheck {
             ("error", ["ERR", "95%"]),
             ("unavailable", ["--", "--"]),
             ("stale", ["35%", "89!"]),
-            ("expired-stale", ["35%", "ERR"]),
+            ("expired-stale", ["35%", "--!"]),
         ]
         for testCase in cases {
             let width = StatusItemController.menuBarWidthForTesting(values: testCase.1)
@@ -423,6 +435,15 @@ enum UISmokeCheck {
               smallFrame.height <= smallVisibleFrame.height - 16
         else {
             print("UI smoke failed: panel frame did not shrink for small visible screen: \(smallFrame)")
+            return false
+        }
+
+        let liveDetailFrame = StatusItemController.panelFrameForTesting(
+            statusFrame: CGRect(x: 1347, y: 1136, width: 41, height: 28),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1800, height: 1169),
+            preferredSize: CGSize(width: 370, height: 980))
+        guard self.frame(liveDetailFrame, fitsInside: CGRect(x: 0, y: 0, width: 1800, height: 1169)) else {
+            print("UI smoke failed: tall detail panel escaped visible screen: \(liveDetailFrame)")
             return false
         }
 
@@ -594,15 +615,19 @@ enum UISmokeCheck {
             updatedAt: now,
             errorMessage: "Claude usage is unavailable: OAuth credentials were not found and CLI fallback is disabled.")
         let message = HoverPanelView.stateMessageTextForTesting(provider: .claude, snapshot: claudeDisabled)
-        guard message.contains("no-Keychain daily mode"),
+        guard message.contains("Safe startup"),
               message.contains("Claude CLI remains off")
         else {
             print("UI smoke failed: Claude disabled message is not actionable, got `\(message)`")
             return false
         }
 
-        guard UsageDiagnosticsFormatter.credentialMode(provider: .claude, snapshot: claudeDisabled) == "No-Keychain daily mode; CLI off" else {
+        guard UsageDiagnosticsFormatter.credentialMode(provider: .claude, snapshot: claudeDisabled) == "Safe startup: Claude login not checked" else {
             print("UI smoke failed: Claude credential mode should explain no-Keychain daily mode")
+            return false
+        }
+        guard HoverPanelView.showsClaudeRepairActionForTesting(provider: .claude, snapshot: claudeDisabled) else {
+            print("UI smoke failed: safe-startup Claude disabled state should show attended repair action")
             return false
         }
 

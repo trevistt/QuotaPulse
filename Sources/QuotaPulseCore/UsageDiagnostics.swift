@@ -38,7 +38,7 @@ public enum UsageDiagnosticsFormatter {
         }
         let lowercased = message.lowercased()
         if UsageSnapshot.isRateLimitMessage(message) { return "Rate limited" }
-        if UsageSnapshot.isAuthFailureMessage(message) { return "Auth expired" }
+        if UsageSnapshot.isAuthFailureMessage(message) { return "Auth blocked" }
         if lowercased.contains("credential") || lowercased.contains("oauth access token") {
             return "Credentials unavailable"
         }
@@ -54,6 +54,13 @@ public enum UsageDiagnosticsFormatter {
         }
         if lowercased.contains("disabled") { return "Disabled" }
         return "Error"
+    }
+
+    public static func errorCategory(provider: ProviderKind, snapshot: UsageSnapshot, lastErrorMessage: String?) -> String {
+        if provider == .claude, snapshot.isAuthBlocked {
+            return "Auth blocked"
+        }
+        return self.errorCategory(lastErrorMessage ?? snapshot.errorMessage)
     }
 
     public static func lastSuccessfulText(_ date: Date?, now: Date = Date()) -> String {
@@ -79,6 +86,9 @@ public enum UsageDiagnosticsFormatter {
         if state.isRefreshing { return "Refreshing now" }
         if let paused = state.pausedReason?.pausedText {
             return paused.replacingOccurrences(of: "Paused: ", with: "Paused ")
+        }
+        if let authBlockedReason = state.authBlockedReason {
+            return "Paused for login repair: \(UsageSnapshot.sanitized(authBlockedReason))"
         }
         if state.provider == .claude,
            let cooldown = state.cooldownUntil,
@@ -115,13 +125,13 @@ public enum UsageDiagnosticsFormatter {
         case .claude:
             switch snapshot.source {
             case .oauth:
-                return "OAuth credential discovery"
+                return "Claude login"
             case .claudeCLI:
                 return "Explicit Claude CLI fallback"
             case .fixture:
                 return "Fixture data"
             case .disabled:
-                return "No-Keychain daily mode; CLI off"
+                return "Safe startup: Claude login not checked"
             case .error:
                 return "OAuth unavailable; CLI off"
             case .cliRPC, .localFallback:
@@ -136,10 +146,10 @@ public enum UsageDiagnosticsFormatter {
                 return "Wait for cooldown, then press Refresh."
             }
             if snapshot.hasAuthFailureError {
-                return "Open Claude Code to refresh login; use the attended Keychain launcher only while present."
+                return "Click Fix Claude Login. If it stays blocked, open Claude Code, run /logout, then /login, return here, and press Refresh."
             }
             if snapshot.source == .disabled || self.errorCategory(snapshot.errorMessage) == "Credentials unavailable" {
-                return "Daily mode avoids Keychain prompts. Run the attended Keychain launcher only while present."
+                return "Safe startup avoids login prompts. Click Fix Claude Login only while you are at this Mac."
             }
         }
         if snapshot.errorMessage != nil {
@@ -172,7 +182,7 @@ public enum UsageDiagnosticsFormatter {
             lines.append("Source: \(state.snapshot.sourceLabel)")
             lines.append("Credential mode: \(Self.credentialMode(provider: state.provider, snapshot: state.snapshot))")
             lines.append("Last successful refresh: \(Self.lastSuccessfulText(state.lastSuccessfulRefreshAt, now: now))")
-            lines.append("Last error category: \(Self.errorCategory(state.lastErrorMessage ?? state.snapshot.errorMessage))")
+            lines.append("Last error category: \(Self.errorCategory(provider: state.provider, snapshot: state.snapshot, lastErrorMessage: state.lastErrorMessage))")
             lines.append("Refresh mode: \(state.refreshState.mode.label)")
             lines.append("Refresh status: \(Self.refreshText(state: state.refreshState, now: now))")
             lines.append("Local analytics: \(Self.analyticsStatusText(state.analytics, lastSuccessfulRefreshAt: state.analyticsLastSuccessfulRefreshAt, lastErrorMessage: state.analyticsLastErrorMessage, now: now))")

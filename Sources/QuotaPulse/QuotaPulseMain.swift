@@ -54,6 +54,16 @@ enum QuotaPulseMain {
             let passed = VisualQAFixtureRunner.run(outputURL: URL(fileURLWithPath: outputPath), variant: .claudeFirst)
             exit(passed ? EXIT_SUCCESS : EXIT_FAILURE)
         }
+        if let outputPath = Self.argument(after: "--visual-qa-fixture-claude-auth-blocked") {
+            app.setActivationPolicy(.accessory)
+            let passed = VisualQAFixtureRunner.run(outputURL: URL(fileURLWithPath: outputPath), variant: .claudeAuthBlocked)
+            exit(passed ? EXIT_SUCCESS : EXIT_FAILURE)
+        }
+        if let outputPath = Self.argument(after: "--visual-qa-fixture-claude-auth-unavailable") {
+            app.setActivationPolicy(.accessory)
+            let passed = VisualQAFixtureRunner.run(outputURL: URL(fileURLWithPath: outputPath), variant: .claudeAuthUnavailable)
+            exit(passed ? EXIT_SUCCESS : EXIT_FAILURE)
+        }
         let delegate = AppDelegate()
         Self.appDelegate = delegate
         app.delegate = delegate

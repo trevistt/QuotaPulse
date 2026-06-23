@@ -59,6 +59,8 @@ write_open_plist() {
         <string>QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT=</string>
         <string>--env</string>
         <string>QUOTA_PULSE_ENABLE_CLAUDE_CLI=</string>
+        <string>--env</string>
+        <string>QUOTA_PULSE_LAUNCHER_ENABLE_CLAUDE_CLI=</string>
         <string>$APP_DIR_XML</string>
     </array>
     <key>RunAtLoad</key>

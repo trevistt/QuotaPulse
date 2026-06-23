@@ -11,6 +11,7 @@ Highlights:
 - User-presence aware Smart Refresh pause/slowdown, jitter, Claude rate-limit cooldowns, and visible refresh feedback.
 - Read-only local analytics parsing for supported Codex and Claude log metadata, with costs labeled as estimates.
 - Status / Diagnostics summaries for refresh state, local analytics state, credential mode, and next action.
+- Claude auth recovery states that distinguish healthy quota, stale cached quota, login-needed state, and hard provider errors.
 - Public-safe launch defaults that avoid unattended Keychain prompts and keep Claude CLI fallback explicit.
 
 QuotaPulse is a local utility. It is not affiliated with, endorsed by, or sponsored by OpenAI or Anthropic.
@@ -53,7 +54,7 @@ The standard launcher intentionally avoids macOS Keychain prompts. Claude OAuth 
 Scripts/run_practical_keychain_prompt.sh
 ```
 
-That attended launcher enables Keychain discovery and permits the macOS Keychain prompt for that launch only.
+QuotaPulse never prompts automatically. The attended launcher starts QuotaPulse in repair mode, and clicking `Fix Claude Login...` is the explicit attended exception when you are ready to approve the macOS Keychain prompt for that launch only.
 
 You can also run the app binary directly for a non-interactive smoke check:
 
@@ -71,9 +72,23 @@ QuotaPulse uses Smart Refresh to keep Codex and Claude usage fresh without polli
 - Auto mode pauses or delays automatic refreshes when the Mac is locked, asleep, in screensaver, or idle.
 - Jitter is added to avoid fixed polling cadence.
 - Claude OAuth rate limits create a cooldown so repeated refreshes do not keep calling Claude before retry time.
+- Claude login-expired or unauthorized states pause background Claude refreshes until attended repair, while Codex continues on its own schedule.
 - The dashboard shows visible refresh feedback, next refresh countdowns, pause state, and Claude cooldown state.
 
 The dashboard countdown text, such as `Next 24s`, updates while the dashboard is visible or pinned.
+
+## Claude Login Recovery
+
+QuotaPulse treats Claude login-expired or OAuth unauthorized responses as a repairable auth-blocked state instead of repeatedly showing a generic error.
+
+Menu bar states:
+
+- Healthy quota: normal percentage, such as `100%`.
+- Stale cached quota: last good percentage with `!`, such as `89!`.
+- Claude login blocked without usable cached quota: `--!`.
+- Hard unavailable provider error: `ERR`.
+
+When Claude is auth-blocked, Smart Refresh stops automatic Claude retries to avoid noisy repeated failures. Codex refresh continues independently. The dashboard shows `Fix Claude Login...`; use it only while you are physically at the Mac because it is the explicit attended exception that may trigger a macOS Keychain prompt. If repair still fails, refresh your Claude Code login, then return to QuotaPulse and press `Refresh`.
 
 ## Dashboard Order
 
@@ -174,7 +189,7 @@ Optional packaging variables:
 - `QUOTA_PULSE_CODESIGN_IDENTITY`
 - `QUOTA_PULSE_REQUIRE_CODESIGN`
 
-The default version in the package script is `0.4.0`.
+The default version in the package script is `0.5.0`.
 
 ### Local Signing
 
@@ -220,7 +235,9 @@ QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT=1
 
 The public daily launcher and Open at Login installer do not set either value by default. `Scripts/run_practical_keychain_prompt.sh` sets the launcher-side prompt flag for an attended launch.
 
-Claude CLI fallback is separate and must be explicitly enabled. It may update local Claude CLI state such as `~/.claude.json`, so the normal launcher keeps it disabled.
+The dashboard `Fix Claude Login...` action allows one explicit Keychain-backed Claude credential read for that attended repair attempt. QuotaPulse still does not mutate Keychain access-control lists, write Claude credentials, refresh OAuth credentials, read browser cookies, or capture login through a WebView.
+
+Claude CLI fallback is separate and must be explicitly enabled through the fallback launcher. It may update local Claude CLI state such as `~/.claude.json`, so the normal launcher keeps it disabled.
 
 See [docs/PRIVACY.md](docs/PRIVACY.md) and [docs/SECURITY.md](docs/SECURITY.md).
 
@@ -231,6 +248,7 @@ See [docs/PRIVACY.md](docs/PRIVACY.md) and [docs/SECURITY.md](docs/SECURITY.md).
 - `QUOTA_PULSE_LAUNCHER_ENABLE_CLAUDE_KEYCHAIN=1`: ask `Scripts/run_practical.sh` to launch with Keychain discovery enabled.
 - `QUOTA_PULSE_LAUNCHER_ALLOW_KEYCHAIN_PROMPT=1`: ask `Scripts/run_practical.sh` to launch with attended Keychain prompts allowed.
 - `QUOTA_PULSE_ENABLE_CLAUDE_CLI=1`: enable explicit Claude CLI fallback.
+- `QUOTA_PULSE_LAUNCHER_ENABLE_CLAUDE_CLI=1`: launcher-side confirmation required by the packaged public launcher for Claude CLI fallback.
 - `QUOTA_PULSE_SHOW_NOTCH=1`: show the optional secondary notch pill.
 - `QUOTA_PULSE_AUTH_PATH=/path/to/auth.json`: override Codex auth file path.
 - `QUOTA_PULSE_CODEX_PATH=/path/to/codex`: override Codex CLI path.

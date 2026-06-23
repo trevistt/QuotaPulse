@@ -72,6 +72,7 @@ unset QUOTA_PULSE_DISABLE_CLAUDE_OAUTH
 unset QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN
 unset QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT
 unset QUOTA_PULSE_ENABLE_CLAUDE_CLI
+unset QUOTA_PULSE_LAUNCHER_ENABLE_CLAUDE_CLI
 if [ "$enable_keychain" = "1" ]; then
     export QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN=1
 fi
@@ -80,6 +81,7 @@ if [ "$allow_keychain_prompt" = "1" ]; then
 fi
 if [ "$cli_fallback" = "1" ]; then
     export QUOTA_PULSE_ENABLE_CLAUDE_CLI=1
+    export QUOTA_PULSE_LAUNCHER_ENABLE_CLAUDE_CLI=1
 fi
 
 set -- -g
@@ -95,8 +97,10 @@ else
 fi
 if [ "$cli_fallback" = "1" ]; then
     set -- "$@" --env QUOTA_PULSE_ENABLE_CLAUDE_CLI=1
+    set -- "$@" --env QUOTA_PULSE_LAUNCHER_ENABLE_CLAUDE_CLI=1
 else
     set -- "$@" --env QUOTA_PULSE_ENABLE_CLAUDE_CLI=
+    set -- "$@" --env QUOTA_PULSE_LAUNCHER_ENABLE_CLAUDE_CLI=
 fi
 if [ -n "$credentials_path" ]; then
     set -- "$@" --env QUOTA_PULSE_CLAUDE_CREDENTIALS_PATH="$credentials_path"
@@ -108,20 +112,21 @@ if [ "$show_notch" = "1" ]; then
     set -- "$@" --env QUOTA_PULSE_SHOW_NOTCH=1
 fi
 
-if [ "$allow_keychain_prompt" = "1" ]; then
-    log "Claude OAuth Keychain discovery enabled with prompts explicitly allowed; Claude CLI fallback state: $cli_fallback."
-    echo "Claude OAuth Keychain prompts are explicitly allowed for this attended launch."
-elif [ "$enable_keychain" = "1" ]; then
-    log "Claude OAuth Keychain discovery enabled without UI prompts; Claude CLI fallback state: $cli_fallback."
-    echo "Claude OAuth Keychain discovery is enabled without UI prompts."
-else
-    log "Claude OAuth Keychain discovery disabled for daily launcher; Claude CLI fallback state: $cli_fallback."
-    echo "Claude OAuth Keychain discovery is disabled for this run."
-    echo "Claude may show unavailable until you run the attended Keychain launcher or provide credentials explicitly."
-fi
 if [ "$cli_fallback" = "1" ]; then
     log "Claude CLI fallback explicitly enabled by fallback launcher."
     echo "Claude CLI fallback is explicitly enabled. Claude CLI may update Claude local state."
+else
+    log "Daily launcher started with Claude CLI fallback disabled."
+fi
+if [ "$allow_keychain_prompt" = "1" ]; then
+    log "Claude Keychain discovery and UI prompts are explicitly allowed for this launcher run."
+    echo "Keychain prompts are explicitly allowed for this run."
+elif [ "$enable_keychain" = "1" ]; then
+    log "Claude Keychain discovery enabled in no-prompt mode for this launcher run."
+    echo "Keychain discovery is enabled without UI prompts; Claude may use cached/stale data if macOS requires approval."
+else
+    log "Claude Keychain discovery is disabled for this launcher run."
+    echo "Keychain access is disabled for this run; Claude may use cached/stale data until you run the Keychain prompt launcher."
 fi
 /usr/bin/open "$@" "$APP_DIR"
 

@@ -13,6 +13,8 @@ enum VisualQAFixtureRunner {
         case claudeAnalyticsError
         case noAnalytics
         case claudeFirst
+        case claudeAuthBlocked
+        case claudeAuthUnavailable
 
         var canvasSize: CGSize {
             switch self {
@@ -24,7 +26,7 @@ enum VisualQAFixtureRunner {
                 CGSize(width: 760, height: 1_360)
             case .constrainedHeight:
                 CGSize(width: 760, height: 560)
-            case .codexAnalyticsOnly, .claudeAnalyticsError, .noAnalytics:
+            case .codexAnalyticsOnly, .claudeAnalyticsError, .noAnalytics, .claudeAuthBlocked, .claudeAuthUnavailable:
                 CGSize(width: 760, height: 1_060)
             }
         }
@@ -39,7 +41,7 @@ enum VisualQAFixtureRunner {
                 1_080
             case .constrainedHeight:
                 430
-            case .codexAnalyticsOnly, .claudeAnalyticsError, .noAnalytics:
+            case .codexAnalyticsOnly, .claudeAnalyticsError, .noAnalytics, .claudeAuthBlocked, .claudeAuthUnavailable:
                 860
             }
         }
@@ -62,6 +64,10 @@ enum VisualQAFixtureRunner {
                 "No Analytics Data QA"
             case .claudeFirst:
                 "Claude First QA"
+            case .claudeAuthBlocked:
+                "Claude Auth Blocked QA"
+            case .claudeAuthUnavailable:
+                "Claude Login Unavailable QA"
             }
         }
 
@@ -78,7 +84,7 @@ enum VisualQAFixtureRunner {
             switch self {
             case .codexAnalyticsOnly:
                 .codex
-            case .claudeAnalyticsError:
+            case .claudeAnalyticsError, .claudeAuthBlocked, .claudeAuthUnavailable:
                 .claude
             default:
                 .overview
@@ -132,7 +138,12 @@ enum VisualQAFixtureRunner {
             print("Visual QA failed: fixture stores did not refresh")
             return false
         }
-        Self.applyVariant(variant, codexStore: codexStore, claudeStore: claudeStore, claudeAnalyticsStore: claudeAnalyticsStore)
+        Self.applyVariant(
+            variant,
+            codexStore: codexStore,
+            claudeStore: claudeStore,
+            claudeAnalyticsStore: claudeAnalyticsStore,
+            scheduler: scheduler)
         let providerOrderStore = ProviderOrderStore(
             defaults: .standard,
             key: "QuotaPulse.visualQA.providerOrder.\(UUID().uuidString)")
@@ -209,7 +220,8 @@ enum VisualQAFixtureRunner {
         _ variant: Variant,
         codexStore: UsageStore,
         claudeStore: UsageStore,
-        claudeAnalyticsStore: LocalUsageAnalyticsStore)
+        claudeAnalyticsStore: LocalUsageAnalyticsStore,
+        scheduler: RefreshScheduler)
     {
         if variant == .tallContent {
             codexStore.replaceSnapshotForTesting(Self.withExtraWindows(
@@ -225,6 +237,31 @@ enum VisualQAFixtureRunner {
             claudeAnalyticsStore.replaceSnapshotForTesting(
                 claudeAnalyticsStore.snapshot.markedStale(
                     errorMessage: "Local Claude analytics scan failed: sanitized fixture error."))
+        }
+        if variant == .claudeAuthBlocked {
+            claudeStore.replaceSnapshotForTesting(
+                UsageSnapshot(
+                    sessionPercentRemaining: 89,
+                    weeklyPercentRemaining: 82,
+                    sessionResetAt: Date().addingTimeInterval(2_400),
+                    weeklyResetAt: Date().addingTimeInterval(2 * 86_400),
+                    source: .oauth,
+                    updatedAt: Date().addingTimeInterval(-3_600))
+                    .markedStale(errorMessage: "OAuth unauthorized; run Claude to refresh login."))
+            scheduler.markClaudeAuthBlockedForTesting()
+        }
+        if variant == .claudeAuthUnavailable {
+            claudeStore.replaceSnapshotForTesting(
+                UsageSnapshot(
+                    sessionPercentRemaining: nil,
+                    weeklyPercentRemaining: nil,
+                    sessionResetAt: nil,
+                    weeklyResetAt: nil,
+                    source: .oauth,
+                    updatedAt: Date().addingTimeInterval(-7_200),
+                    isStale: true,
+                    errorMessage: "OAuth unauthorized; run Claude to refresh login."))
+            scheduler.markClaudeAuthBlockedForTesting()
         }
     }
 

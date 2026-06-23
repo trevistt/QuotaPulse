@@ -70,6 +70,7 @@ private final class Harness {
         await self.run("Smart Refresh presence pause and wake", self.smartRefreshPresencePauseAndWake)
         await self.run("Smart Refresh Claude unchanged baseline", self.smartRefreshClaudeUnchangedBaseline)
         await self.run("Smart Refresh manual cooldown skip", self.smartRefreshManualCooldownSkip)
+        await self.run("Smart Refresh Claude auth blocked pauses automatic retry", self.smartRefreshClaudeAuthBlockedPausesAutomaticRetry)
         await self.run("Smart Refresh countdown text updates from supplied time", self.smartRefreshCountdownTextUsesSuppliedNow)
         await self.run("Smart Refresh scheduler debounce", self.smartRefreshSchedulerDebounce)
         await self.run("UsageStore refresh feedback debounce", self.usageStoreRefreshFeedbackDebounce)
@@ -229,13 +230,17 @@ private final class Harness {
         try self.expect(staleCompact.contains("Cl 89!"), "Claude stale auth failure renders stale-marked cached value")
         try self.expect(!staleCompact.contains("Cl 89%"), "Claude stale auth failure does not render old percentage as live")
         try self.expect(!staleCompact.contains("Cl ERR"), "Claude stale auth with usable cache does not render ERR")
+        let staleAccessibility = UsageDisplayFormatter.menuBarAccessibilityText(codex: codex, claude: staleClaude, now: now)
+        try self.expect(staleAccessibility.contains("Claude 89% cached quota, login repair needed"), "Claude stale auth accessibility explains cached quota")
 
         let expiredCompact = UsageDisplayFormatter.menuBarCompactText(codex: codex, claude: expiredClaude, now: now)
-        try self.expect(expiredCompact.contains("Cl ERR"), "expired cached Claude session renders ERR")
+        try self.expect(expiredCompact.contains("Cl --!"), "expired cached Claude auth session renders stale-login marker")
         try self.expect(!expiredCompact.contains("Cl 89!"), "expired cached Claude session does not render stale marker")
 
         let missingCompact = UsageDisplayFormatter.menuBarCompactText(codex: codex, claude: missingClaude, now: now)
-        try self.expect(missingCompact.contains("Cl ERR"), "missing cached Claude session renders ERR")
+        try self.expect(missingCompact.contains("Cl --!"), "missing cached Claude auth session renders stale-login marker")
+        let missingAccessibility = UsageDisplayFormatter.menuBarAccessibilityText(codex: codex, claude: missingClaude, now: now)
+        try self.expect(missingAccessibility.contains("Claude login needed; open dashboard"), "Claude auth-blocked accessibility explains login-needed state")
     }
 
     private func secretSanitization() async throws {
@@ -459,6 +464,20 @@ private final class Harness {
                 data: Data(Self.claudeCredentialsJSON(accessToken: "keychain-access").utf8),
                 promptRecorder: promptAllowedRecorder))
         try self.expect(promptAllowedRecorder.values == [true], "explicit env allows Keychain prompt")
+
+        let startupNoPromptRecorder = KeychainPromptRecorder()
+        _ = try ClaudeOAuthCredentialsStore.loadRecord(
+            env: [
+                "HOME": temp.path,
+                "QUOTA_PULSE_CLAUDE_OAUTH_CACHE_PATH": temp.appendingPathComponent("missing-cache.json").path,
+                "QUOTA_PULSE_ENABLE_CLAUDE_KEYCHAIN": "1",
+                "QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT": "1",
+            ],
+            keychainReader: StubClaudeKeychainReader(
+                data: Data(Self.claudeCredentialsJSON(accessToken: "keychain-access").utf8),
+                promptRecorder: startupNoPromptRecorder),
+            allowUserPromptOverride: false)
+        try self.expect(startupNoPromptRecorder.values == [false], "startup override suppresses env Keychain prompt")
     }
 
     private func claudeOAuthKeychainFailClosedDiscovery() async throws {
@@ -1293,6 +1312,62 @@ private final class Harness {
         try self.expect(scheduler.summaryText.contains("Claude cooldown"), "manual cooldown skip is visible")
     }
 
+    private func smartRefreshClaudeAuthBlockedPausesAutomaticRetry() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let codexStore = UsageStore(
+            provider: FixtureCodexUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let initialClaude = UsageSnapshot(
+            sessionPercentRemaining: 89,
+            weeklyPercentRemaining: 82,
+            sessionResetAt: clock.now.addingTimeInterval(3_600),
+            weeklyResetAt: clock.now.addingTimeInterval(86_400),
+            source: .oauth,
+            updatedAt: clock.now)
+        let recoveredClaude = UsageSnapshot(
+            sessionPercentRemaining: 88,
+            weeklyPercentRemaining: 82,
+            sessionResetAt: clock.now.addingTimeInterval(3_600),
+            weeklyResetAt: clock.now.addingTimeInterval(86_400),
+            source: .oauth,
+            updatedAt: clock.now.addingTimeInterval(20))
+        let claudeProvider = SequencedUsageProvider(steps: [
+            .success(initialClaude),
+            .failure("OAuth unauthorized; run Claude to refresh login."),
+            .success(recoveredClaude),
+        ])
+        let claudeStore = UsageStore(provider: claudeProvider, cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let scheduler = RefreshScheduler(
+            stores: [codexStore, claudeStore],
+            jitter: .none,
+            now: { clock.now })
+        scheduler.setMode(.auto, for: .codex)
+        scheduler.setMode(.auto, for: .claude)
+
+        await scheduler.refreshProviderForTesting(.claude)
+        try self.expect(claudeStore.snapshot.sessionPercentRemaining == 89, "initial Claude auth-block test succeeds")
+        await scheduler.refreshProviderForTesting(.claude)
+        try self.expect(claudeStore.snapshot.isAuthBlocked, "unauthorized Claude snapshot is auth blocked")
+        try self.expect(claudeStore.snapshot.sessionPercentRemaining == 89, "auth blocked preserves last good Claude value")
+        try self.expect(scheduler.claudeState.authBlockedReason != nil, "scheduler records Claude auth blocked")
+        try self.expect(scheduler.claudeState.nextRefreshAt == nil, "auth blocked clears Claude next refresh")
+        let countAfterBlock = await claudeProvider.count()
+
+        scheduler.refresh(provider: .claude, manual: false)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        let countAfterAutomaticSkip = await claudeProvider.count()
+        try self.expect(countAfterAutomaticSkip == countAfterBlock, "automatic refresh skips auth-blocked Claude")
+        try self.expect(scheduler.summaryText.contains("Claude login needs repair"), "auth-blocked summary is visible")
+
+        scheduler.repairClaudeLogin()
+        try await Self.waitUntil {
+            await claudeProvider.count() >= countAfterBlock + 1
+        }
+        try self.expect(claudeStore.snapshot.sessionPercentRemaining == 88, "repair action refreshes Claude once")
+        try self.expect(!claudeStore.snapshot.isStale, "repair success clears stale Claude state")
+        try self.expect(scheduler.claudeState.authBlockedReason == nil, "repair success clears scheduler auth block")
+    }
+
     private func smartRefreshCountdownTextUsesSuppliedNow() async throws {
         let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
         let codexStore = UsageStore(
@@ -1851,12 +1926,14 @@ private enum SequencedUsageStep: Sendable {
 
 private actor SequencedUsageProvider: CodexUsageProviding {
     private var steps: [SequencedUsageStep]
+    private var fetchCount = 0
 
     init(steps: [SequencedUsageStep]) {
         self.steps = steps
     }
 
     func fetchUsage() async throws -> UsageSnapshot {
+        self.fetchCount += 1
         guard !self.steps.isEmpty else {
             throw CodexUsageProviderError.noUsageWindows
         }
@@ -1866,6 +1943,10 @@ private actor SequencedUsageProvider: CodexUsageProviding {
         case let .failure(message):
             throw CodexUsageProviderError.processFailed(message)
         }
+    }
+
+    func count() -> Int {
+        self.fetchCount
     }
 }
 

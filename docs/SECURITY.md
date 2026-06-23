@@ -22,6 +22,8 @@ QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT=1
 
 The public `Scripts/run_practical.sh` launcher and Open at Login installer do not enable Keychain discovery, Keychain prompts, or Claude CLI fallback by default. `Scripts/run_practical_keychain_prompt.sh` is the attended launcher for users who are present at the Mac and can approve a Keychain prompt.
 
+When Claude OAuth returns unauthorized or login-expired errors, QuotaPulse marks Claude as auth-blocked, pauses background Claude refreshes, and shows `Fix Claude Login...` in the dashboard. That action is attended-only and permits one explicit Keychain-backed Claude credential read for the repair attempt. Codex refreshes continue independently.
+
 Claude CLI fallback is disabled by the standard launcher. The explicit fallback launcher warns before enabling it because Claude CLI may update local Claude state.
 
 ## Local Signing and Keychain Prompts
@@ -31,6 +33,8 @@ Ad-hoc signing is useful for local app bundle validation, but it does not create
 If you need fewer local Keychain prompts, package with your own local signing identity through `QUOTA_PULSE_CODESIGN_IDENTITY`. This repository does not include or recommend committing any personal signing identity name.
 
 Do not mutate Keychain access-control lists as a workaround. Do not copy or store Claude credentials to bypass Keychain prompts.
+
+Do not add browser cookie access, WebView login capture, token refresh mutation, or background Claude CLI fallback as a repair shortcut.
 
 Official public releases should use Apple Developer ID signing and notarization.
 
