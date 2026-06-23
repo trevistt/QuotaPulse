@@ -31,6 +31,8 @@ Scripts/test.sh
 Scripts/package_app.sh
 ```
 
+`swift test` builds the SwiftPM core test target. On Command Line Tools-only Macs without an `xctest` runner, SwiftPM may report only `Build complete!`; use `Scripts/test.sh` for explicit local assertion output in that environment.
+
 `Scripts/package_app.sh` creates a local app at:
 
 ```text
