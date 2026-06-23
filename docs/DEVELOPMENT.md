@@ -19,6 +19,12 @@ Run the harness:
 Scripts/test.sh
 ```
 
+Run SwiftPM core tests:
+
+```bash
+swift test
+```
+
 Package a local app:
 
 ```bash
@@ -45,11 +51,13 @@ Run Swift Package Manager tests:
 swift test
 ```
 
-This package currently uses the `QuotaPulseTestHarness` executable for validation. `swift test` may report that no tests are found.
+`swift test` includes the `QuotaPulseCoreTests` target. These are deterministic pure-core Swift Testing checks for display formatting, pacing, Claude auth classification, countdowns, and sanitization. They do not read live credentials, local logs, Keychain, Claude CLI, or UI state.
+
+The current test target uses Swift Testing. `Package.swift` includes local Command Line Tools framework/linker settings so the target builds with the active Swift 6 toolchain on macOS. On Command Line Tools-only installs without an `xctest` runner, SwiftPM may report only `Build complete!`; use `Scripts/test.sh` for explicit assertion counts in that environment.
 
 ## Harness Coverage
 
-`Scripts/test.sh` runs `swift run QuotaPulseTestHarness`. The harness covers provider parsing, redaction, OAuth request behavior, Claude OAuth credential reload, Claude auth-blocked retry pause and repair, Claude rate-limit cooldown, Smart Refresh policy, independent per-provider refresh timing, presence pause/wake behavior, countdown text, refresh debounce, stale cached values, provider ordering, menu bar formatting, local analytics parsing, diagnostics metadata, diagnostics export sanitization, and no-Keychain credential discovery behavior.
+`Scripts/test.sh` runs `swift run QuotaPulseTestHarness`. Keep it alongside `swift test`; it covers broader integration-style behavior such as provider parsing, redaction, OAuth request behavior, Claude OAuth credential reload, Claude auth-blocked retry pause and repair, Claude rate-limit cooldown, Smart Refresh policy, independent per-provider refresh timing, presence pause/wake behavior, countdown text, refresh debounce, stale cached values, provider ordering, menu bar formatting, local analytics parsing, diagnostics metadata, diagnostics export sanitization, and no-Keychain credential discovery behavior.
 
 The visual QA fixture should also be regenerated when dashboard layout changes:
 

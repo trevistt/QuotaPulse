@@ -26,6 +26,7 @@ QuotaPulse is a local utility. It is not affiliated with, endorsed by, or sponso
 
 ```bash
 swift build
+swift test
 Scripts/test.sh
 Scripts/package_app.sh
 ```
@@ -287,7 +288,7 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [docs/ARCHITECTURE.md](docs/A
 - Local build only; no Developer ID signed or notarized release is included.
 - No official API guarantee is provided by this repository.
 - No auto-update system is included.
-- No formal XCTest target is included; the repository includes a Swift test harness executable.
+- `swift test` includes a deterministic pure-core SwiftPM test target. The broader validation harness remains in `Scripts/test.sh` for explicit assertion output.
 - Brand icons are included from Simple Icons; review applicable trademark guidance before redistributing packaged builds.
 
 ## License
