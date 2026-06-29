@@ -181,6 +181,7 @@ public struct ProviderRefreshState: Equatable, Sendable {
 
 public enum ProviderRefreshPolicy {
     public static let claudeFastModeDuration: TimeInterval = 12 * 60
+    public static let claudeAuthBlockedRecoveryDelay: TimeInterval = 5 * 60
     public static let wakeRefreshDelay: TimeInterval = 6
 
     public static func automaticBaseDelay(
@@ -288,11 +289,20 @@ public final class RefreshScheduler: ObservableObject {
         self.jitter = jitter
         self.now = now
         self.codexState = ProviderRefreshState(provider: .codex)
-        self.claudeState = ProviderRefreshState(provider: .claude)
+        if mapped[.claude]?.snapshot.isAuthBlocked == true {
+            self.claudeState = ProviderRefreshState(
+                provider: .claude,
+                authBlockedReason: UsageSnapshot.claudeLoginExpiredMessage,
+                lastStatusText: "Claude login needs repair")
+        } else {
+            self.claudeState = ProviderRefreshState(provider: .claude)
+        }
     }
 
     public func start() {
-        self.refreshNow()
+        for provider in ProviderKind.allCases {
+            self.refresh(provider: provider, manual: false)
+        }
     }
 
     public func stop() {
@@ -434,12 +444,15 @@ public final class RefreshScheduler: ObservableObject {
            state.authBlockedReason != nil,
            !manual
         {
-            self.updateState(for: provider) { state in
-                state.nextRefreshAt = nil
-                state.cooldownUntil = nil
-                state.lastStatusText = "Claude login needs repair"
+            if let nextRefreshAt = state.nextRefreshAt,
+               nextRefreshAt > self.now()
+            {
+                self.updateState(for: provider) { state in
+                    state.cooldownUntil = nil
+                    state.lastStatusText = "Claude login retry in \(Self.refreshCountdown(to: nextRefreshAt, now: self.now()))"
+                }
+                return
             }
-            return
         }
         if provider == .claude,
            let cooldownUntil = state.cooldownUntil,
@@ -482,6 +495,11 @@ public final class RefreshScheduler: ObservableObject {
             return paused
         }
         if self.claudeState.authBlockedReason != nil {
+            if let retryAt = self.claudeState.nextRefreshAt,
+               retryAt > now
+            {
+                return "Claude login retry in \(Self.refreshCountdown(to: retryAt, now: now)); Codex keeps refreshing."
+            }
             return "Claude login needs repair; Codex keeps refreshing."
         }
         if let cooldown = self.claudeState.cooldownUntil,
@@ -499,7 +517,12 @@ public final class RefreshScheduler: ObservableObject {
     public func nextText(for provider: ProviderKind, now: Date) -> String {
         let state = self.state(for: provider)
         if state.isRefreshing { return "now" }
-        if state.authBlockedReason != nil { return "Login" }
+        if state.authBlockedReason != nil {
+            if let retryAt = state.nextRefreshAt, retryAt > now {
+                return Self.refreshCountdown(to: retryAt, now: now)
+            }
+            return "Login"
+        }
         if state.mode == .manual { return "Manual" }
         guard let nextRefreshAt = state.nextRefreshAt else { return "soon" }
         return Self.refreshCountdown(to: nextRefreshAt, now: now)
@@ -601,10 +624,17 @@ public final class RefreshScheduler: ObservableObject {
         if provider == .claude,
            state.authBlockedReason != nil
         {
-            state.nextRefreshAt = nil
             state.cooldownUntil = nil
-            state.lastStatusText = "Claude login needs repair"
+            if state.mode == .manual {
+                state.nextRefreshAt = nil
+                state.lastStatusText = "Claude login needs repair"
+                self.setState(state, for: provider)
+                return
+            }
+            state.lastStatusText = "Claude login recovery retry"
             self.setState(state, for: provider)
+            let delay = self.jitter.delay(base: ProviderRefreshPolicy.claudeAuthBlockedRecoveryDelay)
+            self.schedule(provider: provider, delay: delay, statusText: "Claude login recovery retry")
             return
         }
 

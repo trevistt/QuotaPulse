@@ -22,7 +22,7 @@ Claude defaults:
 
 The public standard launcher and Open at Login installer keep Claude Code Keychain discovery disabled by default. This avoids unattended macOS Keychain prompts, but Claude OAuth quota may appear cached or unavailable until the user runs the attended Keychain launcher or provides credentials explicitly.
 
-If Claude returns an unauthorized or login-expired OAuth response, QuotaPulse marks Claude as login repair needed. The dashboard `Fix Claude Login...` action may perform one attended Keychain-backed credential read after the user chooses it. It does not write credentials, copy Claude credential files, update Keychain access-control lists, read browser cookies, or open a WebView login.
+If Claude returns an unauthorized or login-expired OAuth response, QuotaPulse marks Claude as login repair needed and may schedule a bounded no-prompt background recovery retry using only the existing readable credential path. The dashboard `Fix Claude Login...` action may perform one attended Keychain-backed credential read after the user chooses it. Neither path writes credentials, copies Claude credential files, updates Keychain access-control lists, reads browser cookies, or opens a WebView login.
 
 ## Local Analytics Estimates
 

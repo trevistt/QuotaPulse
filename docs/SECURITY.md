@@ -22,7 +22,9 @@ QUOTA_PULSE_ALLOW_CLAUDE_KEYCHAIN_PROMPT=1
 
 The public `Scripts/run_practical.sh` launcher and Open at Login installer do not enable Keychain discovery, Keychain prompts, or Claude CLI fallback by default. `Scripts/run_practical_keychain_prompt.sh` is the attended launcher for users who are present at the Mac and can approve a Keychain prompt.
 
-When Claude OAuth returns unauthorized or login-expired errors, QuotaPulse marks Claude as auth-blocked, pauses background Claude refreshes, and shows `Fix Claude Login...` in the dashboard. That action is attended-only and permits one explicit Keychain-backed Claude credential read for the repair attempt. Codex refreshes continue independently.
+When Claude OAuth returns unauthorized or login-expired errors, QuotaPulse marks Claude as auth-blocked, keeps any usable stale cached Claude quota, and schedules a bounded no-prompt background recovery retry. Automatic Claude refresh is skipped before the retry time, and Codex refreshes continue independently.
+
+The background recovery retry does not enable Keychain prompts, Claude CLI fallback, browser cookies, WebView login, credential writes, token refresh mutation, or Keychain access-control-list mutation. The dashboard still shows `Fix Claude Login...`; that action is attended-only and permits one explicit Keychain-backed Claude credential read for the repair attempt.
 
 Claude CLI fallback is disabled by the standard launcher. The explicit fallback launcher warns before enabling it because Claude CLI may update local Claude state.
 

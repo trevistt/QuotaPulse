@@ -1299,6 +1299,9 @@ struct HoverPanelView: View {
             return paused.replacingOccurrences(of: "Paused: ", with: "Paused ")
         }
         if state.authBlockedReason != nil {
+            if let next = state.nextRefreshAt, next > now {
+                return "Auto retry \(Self.timeText(next)) · \(RefreshScheduler.refreshCountdown(to: next, now: now))"
+            }
             return "Login repair needed"
         }
         if provider == .claude,

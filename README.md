@@ -75,7 +75,7 @@ QuotaPulse uses Smart Refresh to keep Codex and Claude usage fresh without polli
 - Auto mode pauses or delays automatic refreshes when the Mac is locked, asleep, in screensaver, or idle.
 - Jitter is added to avoid fixed polling cadence.
 - Claude OAuth rate limits create a cooldown so repeated refreshes do not keep calling Claude before retry time.
-- Claude login-expired or unauthorized states pause background Claude refreshes until attended repair, while Codex continues on its own schedule.
+- Claude login-expired or unauthorized states schedule a bounded no-prompt background recovery retry, while Codex continues on its own schedule.
 - The dashboard shows visible refresh feedback, next refresh countdowns, pause state, and Claude cooldown state.
 
 The dashboard countdown text, such as `Next 24s`, updates while the dashboard is visible or pinned.
@@ -91,7 +91,11 @@ Menu bar states:
 - Claude login blocked without usable cached quota: `--!`.
 - Hard unavailable provider error: `ERR`.
 
-When Claude is auth-blocked, Smart Refresh stops automatic Claude retries to avoid noisy repeated failures. Codex refresh continues independently. The dashboard shows `Fix Claude Login...`; use it only while you are physically at the Mac because it is the explicit attended exception that may trigger a macOS Keychain prompt. If repair still fails, refresh your Claude Code login, then return to QuotaPulse and press `Refresh`.
+When Claude is auth-blocked, Smart Refresh keeps the last cached Claude quota when available, schedules a bounded no-prompt background recovery retry, and skips automatic Claude refresh before that retry time. Codex refresh continues independently. If Claude credentials become readable and valid again before or at the retry, the next recovery attempt can clear the stale auth state.
+
+The dashboard still shows `Fix Claude Login...`; use it only while you are physically at the Mac because it is the explicit attended exception that may trigger a macOS Keychain prompt. If macOS or Claude requires owner action, refresh your Claude Code login, then return to QuotaPulse and press `Fix Claude Login...` or `Refresh`.
+
+The background recovery retry does not enable background Keychain prompts, Claude CLI fallback, browser cookies, WebView login, credential writes, token refresh mutation, or Keychain access-control-list mutation.
 
 ## Dashboard Order
 
@@ -192,7 +196,7 @@ Optional packaging variables:
 - `QUOTA_PULSE_CODESIGN_IDENTITY`
 - `QUOTA_PULSE_REQUIRE_CODESIGN`
 
-The default version in the package script is `0.5.0`.
+The default version in the package script is `0.6.0`.
 
 ### Local Signing
 

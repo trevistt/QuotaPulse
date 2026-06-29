@@ -25,7 +25,7 @@ QuotaPulse is a Swift Package with three targets.
 
 Auto mode can adapt to dashboard visibility, unchanged successful reads, user presence, wake events, Claude OAuth cooldowns, and Claude login repair state. Jitter is applied to scheduled refreshes to avoid fixed polling cadence.
 
-If Claude OAuth returns unauthorized or login-expired, the scheduler records Claude as auth-blocked, clears the next Claude automatic refresh, and leaves Codex refresh independent. A manual repair action can clear that state and trigger one Claude refresh attempt.
+If Claude OAuth returns unauthorized or login-expired, the scheduler records Claude as auth-blocked, keeps any usable stale cached Claude quota, schedules a bounded no-prompt Claude recovery retry, and leaves Codex refresh independent. Automatic Claude refresh is skipped before the retry time; after the retry time, a no-prompt recovery attempt can self-heal if credentials are readable and valid again. A manual repair action remains available for attended owner action.
 
 `UserPresenceMonitor` observes coarse macOS local presence signals and reports them to the scheduler. It does not send presence data anywhere.
 

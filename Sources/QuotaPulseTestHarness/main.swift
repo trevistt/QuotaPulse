@@ -70,7 +70,8 @@ private final class Harness {
         await self.run("Smart Refresh presence pause and wake", self.smartRefreshPresencePauseAndWake)
         await self.run("Smart Refresh Claude unchanged baseline", self.smartRefreshClaudeUnchangedBaseline)
         await self.run("Smart Refresh manual cooldown skip", self.smartRefreshManualCooldownSkip)
-        await self.run("Smart Refresh Claude auth blocked pauses automatic retry", self.smartRefreshClaudeAuthBlockedPausesAutomaticRetry)
+        await self.run("Smart Refresh Claude auth blocked schedules safe retry", self.smartRefreshClaudeAuthBlockedSchedulesSafeRetry)
+        await self.run("Smart Refresh Claude no-cache auth blocked retry", self.smartRefreshClaudeNoCacheAuthBlockedSchedulesSafeRetry)
         await self.run("Smart Refresh countdown text updates from supplied time", self.smartRefreshCountdownTextUsesSuppliedNow)
         await self.run("Smart Refresh scheduler debounce", self.smartRefreshSchedulerDebounce)
         await self.run("UsageStore refresh feedback debounce", self.usageStoreRefreshFeedbackDebounce)
@@ -1312,10 +1313,11 @@ private final class Harness {
         try self.expect(scheduler.summaryText.contains("Claude cooldown"), "manual cooldown skip is visible")
     }
 
-    private func smartRefreshClaudeAuthBlockedPausesAutomaticRetry() async throws {
+    private func smartRefreshClaudeAuthBlockedSchedulesSafeRetry() async throws {
         let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let codexProvider = CountingProvider()
         let codexStore = UsageStore(
-            provider: FixtureCodexUsageProvider(mode: .success, now: { clock.now }),
+            provider: codexProvider,
             cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
         let initialClaude = UsageSnapshot(
             sessionPercentRemaining: 89,
@@ -1350,22 +1352,59 @@ private final class Harness {
         try self.expect(claudeStore.snapshot.isAuthBlocked, "unauthorized Claude snapshot is auth blocked")
         try self.expect(claudeStore.snapshot.sessionPercentRemaining == 89, "auth blocked preserves last good Claude value")
         try self.expect(scheduler.claudeState.authBlockedReason != nil, "scheduler records Claude auth blocked")
-        try self.expect(scheduler.claudeState.nextRefreshAt == nil, "auth blocked clears Claude next refresh")
+        try self.expect(scheduler.claudeState.nextRefreshAt != nil, "auth blocked schedules Claude recovery retry")
+        try self.expect(
+            Self.secondsUntil(scheduler.claudeState.nextRefreshAt, from: clock.now) == Int(ProviderRefreshPolicy.claudeAuthBlockedRecoveryDelay),
+            "auth blocked retry uses the bounded recovery delay")
         let countAfterBlock = await claudeProvider.count()
 
         scheduler.refresh(provider: .claude, manual: false)
         try await Task.sleep(nanoseconds: 20_000_000)
         let countAfterAutomaticSkip = await claudeProvider.count()
-        try self.expect(countAfterAutomaticSkip == countAfterBlock, "automatic refresh skips auth-blocked Claude")
-        try self.expect(scheduler.summaryText.contains("Claude login needs repair"), "auth-blocked summary is visible")
+        try self.expect(countAfterAutomaticSkip == countAfterBlock, "automatic refresh before retry time skips auth-blocked Claude")
+        try self.expect(scheduler.summaryText.contains("Claude login retry in"), "auth-blocked retry summary is visible")
 
-        scheduler.repairClaudeLogin()
+        scheduler.refresh(provider: .codex, manual: false)
+        try await Self.waitUntil {
+            await codexProvider.count() >= 1
+        }
+        try self.expect(codexStore.snapshot.sessionPercentRemaining == 89, "Codex remains independently refreshable")
+
+        clock.now = scheduler.claudeState.nextRefreshAt!.addingTimeInterval(1)
+        scheduler.refresh(provider: .claude, manual: false)
         try await Self.waitUntil {
             await claudeProvider.count() >= countAfterBlock + 1
         }
-        try self.expect(claudeStore.snapshot.sessionPercentRemaining == 88, "repair action refreshes Claude once")
-        try self.expect(!claudeStore.snapshot.isStale, "repair success clears stale Claude state")
-        try self.expect(scheduler.claudeState.authBlockedReason == nil, "repair success clears scheduler auth block")
+        try self.expect(claudeStore.snapshot.sessionPercentRemaining == 88, "retry after recovery delay refreshes Claude once")
+        try self.expect(!claudeStore.snapshot.isStale, "retry success clears stale Claude state")
+        try self.expect(scheduler.claudeState.authBlockedReason == nil, "retry success clears scheduler auth block")
+    }
+
+    private func smartRefreshClaudeNoCacheAuthBlockedSchedulesSafeRetry() async throws {
+        let clock = TestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let codexStore = UsageStore(
+            provider: FixtureCodexUsageProvider(mode: .success, now: { clock.now }),
+            cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let claudeProvider = SequencedUsageProvider(steps: [
+            .failure("OAuth unauthorized; run Claude to refresh login."),
+        ])
+        let claudeStore = UsageStore(provider: claudeProvider, cache: UsageSnapshotCache(url: Self.makeTempCacheURL()))
+        let scheduler = RefreshScheduler(
+            stores: [codexStore, claudeStore],
+            jitter: .none,
+            now: { clock.now })
+        scheduler.setMode(.auto, for: .codex)
+        scheduler.setMode(.auto, for: .claude)
+
+        await scheduler.refreshProviderForTesting(.claude)
+
+        try self.expect(claudeStore.snapshot.isAuthBlocked, "no-cache unauthorized Claude snapshot is auth blocked")
+        try self.expect(scheduler.claudeState.authBlockedReason != nil, "no-cache unauthorized records scheduler auth block")
+        try self.expect(scheduler.claudeState.nextRefreshAt != nil, "no-cache unauthorized schedules safe Claude retry")
+        try self.expect(
+            Self.secondsUntil(scheduler.claudeState.nextRefreshAt, from: clock.now) == Int(ProviderRefreshPolicy.claudeAuthBlockedRecoveryDelay),
+            "no-cache unauthorized retry uses the bounded recovery delay")
+        try self.expect(scheduler.nextText(for: .claude, now: clock.now) == "5m", "no-cache unauthorized exposes retry countdown")
     }
 
     private func smartRefreshCountdownTextUsesSuppliedNow() async throws {
