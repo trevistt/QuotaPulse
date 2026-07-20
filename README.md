@@ -1,5 +1,8 @@
 # QuotaPulse
 
+> [!IMPORTANT]
+> QuotaPulse has been succeeded by [Codex Balance](https://github.com/trevistt/CodexBalance). This repository is archived and remains available for historical reference.
+
 QuotaPulse is a native macOS menu bar utility for checking local Codex and Claude usage at a glance.
 
 It shows compact percentage meters in the macOS menu bar, opens a taller dashboard popover for session, weekly pacing, local-log analytics estimates, and Smart Refresh controls, and can optionally install an Open at Login LaunchAgent for the current user.
